@@ -59,7 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="small",
         help="Instance size preset (default: small).",
     )
-    gen_p.add_argument("--seed", type=int, default=0, help="RNG seed (default: 0).")
+    gen_p.add_argument("--seed", type=int, default=None, help="RNG seed. Default: 1000 with --suite-dir, else 0.")
     gen_p.add_argument("--out", help="Output JSON file path for a single instance.")
     gen_p.add_argument(
         "--suite-dir",
@@ -103,11 +103,11 @@ def main(argv: list[str] | None = None) -> int:
             written = generate_benchmark_suite(
                 args.suite_dir,
                 count_per_preset=args.count,
-                base_seed=args.seed,
+                base_seed=1000 if args.seed is None else args.seed,
             )
             print(f"Generated {len(written)} instances in {Path(args.suite_dir)}")
             return 0
-        inst = generate_instance(preset=args.preset, seed=args.seed)
+        inst = generate_instance(preset=args.preset, seed=0 if args.seed is None else args.seed)
         if args.out:
             inst.save_json(args.out)
             print(f"Wrote {args.out}")
