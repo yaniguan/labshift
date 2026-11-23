@@ -4,21 +4,23 @@ A synthetic lab scheduling and planning benchmark for multi-instrument liquid-ha
 
 ## What It Is
 
-`labshift` models scheduling of synthetic liquid-handling jobs (such as plate preparation, buffer addition, dilution series, washing, spinning, incubation, and plate reads) across shared instrument pools:
+`labshift` models scheduling of synthetic and protocol-derived liquid-handling jobs (such as plate preparation, buffer addition, dilution series, washing, spinning, incubation, and plate reads) across shared instrument pools:
 
 - `liquid_handler`
 - `incubator`
 - `plate_reader`
 - `centrifuge`
 - `washer`
+- optional `robot_arm` (when inter-instrument `transfer_time > 0` is modeled)
 
-Each job is a chain of operations with durations (in integer minutes), job release times, optional deadlines, and optional `min_wait` / `max_wait` time windows between consecutive operations. The package includes:
+Each job is a chain of operations with durations (in positive integer minutes), job release times, optional deadlines, optional `min_wait` / `max_wait` time windows, and optional `transfer_time` transit delays between consecutive operations. The package includes:
 
-- JSON-serializable dataclasses (`Instance`, `Job`, `Operation`, `Schedule`, `ScheduledOp`)
-- A seeded synthetic instance generator (`small`, `medium`, `large` presets) and a fixed 30-instance benchmark suite in `benchmarks/`
-- A schedule feasibility checker validating completeness, durations, precedence, time windows, release times, deadlines, and instrument capacities
-- A greedy list-scheduling baseline (`greedy`) and an OR-Tools CP-SAT solver (`cpsat`)
-- Metrics (`makespan`, `total_tardiness`, `mean_flow_time`, `window_violations`, `solve_time_s`, and gap to CP-SAT best bound) and an ASCII Gantt chart renderer
+- Validated JSON-serializable dataclasses (`Instance`, `Job`, `Operation`, `Schedule`, `ScheduledOp`)
+- A seeded synthetic instance generator (`small`, `medium`, `large`, and `hard` presets, plus `--ensure-feasible`) and a fixed 30-instance v1 benchmark suite in `benchmarks/`
+- Protocol adapters (`job_from_protocol`, `instance_from_protocols`, `export_workcell_queue`) bridging `twinstep` / `stepbot` step lists into `labshift` instances and robot dispatch queues
+- A schedule feasibility checker validating instance identity, completeness, instrument assignment, durations, precedence, time windows, transfer times, release times, deadlines, and exact sweep-line capacities
+- Two zero-dependency stdlib heuristics (`greedy` and coupled right-shift `greedy_repair`) plus an lazily loaded OR-Tools CP-SAT solver (`cpsat`, supporting `--tie-break-flow`, `--soft-deadlines`, `--workers`, and `--seed`)
+- Metrics (`makespan`, `total_tardiness`, `mean_flow_time`, `window_violations`, `solve_time_s`, and un-clamped dual `gap_pct`) and an ASCII Gantt chart renderer
 
 ## Install
 
@@ -28,65 +30,70 @@ Requires Python 3.11+.
 pip install -e .[dev]
 ```
 
+Pure-stdlib modules (`models`, `generator`, `checker`, `greedy`, `metrics`, `gantt`, `protocol`, `bench`) lazy-load `ortools>=9.8` and also run in lightweight `--no-deps` environments when `cpsat` is not invoked.
+
 Part of **[Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab)** ([Project Studio](https://yaniguan.github.io/auto-lab/)) — **Layer `L5 · Executive Planning, Procurement & Scheduling`**.
 
 ## System Profile: Object · Data · Model · Training · History · Unique Properties
 
-Full code-level architecture, CP-SAT formulation, benchmark analysis (`main` vs open PR `origin/review-fixes`), and history are documented in **[`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md)**:
+Full code-level architecture, CP-SAT formulation, benchmark analysis, and engineering history are documented in **[`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md)**:
 
-- **Object**: Executive multi-instrument lab scheduling benchmark, sweep-line verifier, greedy baseline, and OR-Tools CP-SAT solver over shared `liquid_handler`, `incubator`, `plate_reader`, `centrifuge`, and `washer` pools with coupled `min_wait`/`max_wait` perishability windows, release times, and deadlines.
-- **Data**: Frozen JSON-serializable models (`Instance`, `Job`, `Operation`, `Schedule`, `ScheduledOp`), 6 seeded assay workflow templates, and a committed 30-instance MIT-licensed benchmark suite (`small_00..09`, `medium_00..09`, `large_00..09`, seeds `1000..1209`).
-- **Model**: Independent departure-first `(t, -1)` sweep-line feasibility checker (`labshift.checker`), priority list-scheduling baseline (`labshift.greedy`), and OR-Tools CP-SAT `IntervalVar` + `no_overlap`/`cumulative` makespan optimizer (`labshift.cpsat`) with dual `best_bound` gap certificates.
-- **Training**: Verifiable combinatorial planning & RLVR reward environment (no internal neural weights; on the 30-instance CPU benchmark, `cpsat` achieves `30/30` feasibility and `116.7` min mean makespan with `5.5%` mean optimality gap vs `greedy` at `24/30` feasibility, `129.8` min makespan, and `13` `max_wait` violations).
-- **History**: Initial release `124a6d7` on `main` (`0.1.0`, 30 benchmark instances, 4 test suites) and open PR `origin/review-fixes` (`58ec7f2`, aligning `--suite-dir` default `--seed 1000` and documenting `mean_flow` non-uniqueness under pure makespan minimization).
-- **Unique Properties**: Exact half-open interval sweep-line verification, perishability window stress-testing, dual optimality bounds, and clean interfaces with [`labfill`](https://github.com/yaniguan/labfill), [`lab-decide`](https://github.com/yaniguan/lab-decide), [`buy-or-make`](https://github.com/yaniguan/buy-or-make), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal), [`lab-verify`](https://github.com/yaniguan/lab-verify), [`YLM`](https://github.com/yaniguan/YLM) LabLean, and [`stepbot`](https://github.com/yaniguan/stepbot).
+- **Object**: Executive multi-instrument lab scheduling benchmark, sweep-line verifier, `O(K log K)` greedy and coupled right-shift heuristics, protocol bridge, and OR-Tools CP-SAT solver over shared `liquid_handler`, `incubator`, `plate_reader`, `centrifuge`, `washer`, and optional `robot_arm` pools with coupled `min_wait`/`max_wait` perishability windows, release times, and hard or soft deadlines.
+- **Data**: Domain-validated frozen JSON-serializable models (`Instance`, `Job`, `Operation`, `Schedule`, `ScheduledOp`), 6 seeded assay workflow templates across `small`/`medium`/`large`/`hard` presets, `twinstep`/`stepbot` protocol importers, and a committed 30-instance MIT-licensed v1 benchmark suite (`small_00..09`, `medium_00..09`, `large_00..09`, seeds `1000..1209`).
+- **Model**: Independent departure-first `(t, -1)` sweep-line feasibility checker (`labshift.checker`), `O(K log K)` priority list-scheduling baseline (`solve_greedy`), pure-stdlib coupled-segment right-shift heuristic (`solve_greedy_repair`), and warm-started OR-Tools CP-SAT `IntervalVar` + `no_overlap`/`cumulative` optimizer (`solve_cpsat`) with tight chain bounds, optional flow-time tie-breaking, soft-deadline tardiness mode, and dual `best_bound` gap certificates.
+- **Training**: Verifiable combinatorial planning & RLVR reward environment (no internal neural weights; on the 30-instance CPU benchmark, `cpsat` achieves `30/30` feasibility and `116.7` min mean makespan, pure-stdlib `greedy_repair` achieves `30/30` feasibility and `129.2` min mean makespan in `0.12 s`, and myopic `greedy` achieves `24/30` feasibility, `129.8` min makespan, and `13` `max_wait` violations).
+- **History**: Initial release `124a6d7` on `main` (`0.1.0`, 30 benchmark instances), review clarifications `58ec7f2` (`origin/review-fixes`, `--suite-dir` default `--seed 1000` and `mean_flow` qualification), and audit resolution adding lazy `ortools>=9.8` imports, domain validation, `greedy_repair`, `labshift solve`, CP-SAT warm-starting/flow tie-breaking/soft deadlines, `transfer_time` arm modeling, and `twinstep` protocol adapters.
+- **Unique Properties**: Exact half-open interval sweep-line verification, perishability window stress-testing, proven dual optimality bounds, stdlib-only deployability, and clean interfaces with [`twinstep`](https://github.com/yaniguan/twinstep), [`labfill`](https://github.com/yaniguan/labfill), [`lab-decide`](https://github.com/yaniguan/lab-decide), [`buy-or-make`](https://github.com/yaniguan/buy-or-make), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal), [`lab-verify`](https://github.com/yaniguan/lab-verify), [`YLM`](https://github.com/yaniguan/YLM) LabLean, and [`stepbot`](https://github.com/yaniguan/stepbot).
 
 ## Repository Layout
 
 ```text
 labshift/
-├── benchmarks/                  # 30 seeded JSON instances (small_00..09, medium_00..09, large_00..09)
+├── benchmarks/                  # 30 seeded v1 JSON instances (small_00..09, medium_00..09, large_00..09)
 ├── src/labshift/
-│   ├── __init__.py              # Public API exports
-│   ├── models.py                # Frozen dataclasses & JSON serialization
-│   ├── generator.py             # 6 workflow templates & small/medium/large presets
-│   ├── checker.py               # Completeness, temporal window, and sweep-line capacity checker
-│   ├── greedy.py                # Earliest-slot priority list-scheduling baseline
-│   ├── cpsat.py                 # OR-Tools CP-SAT interval & cumulative solver
+│   ├── __init__.py              # Public API exports with PEP 562 lazy solve_cpsat loading
+│   ├── models.py                # Frozen validated dataclasses & JSON serialization
+│   ├── generator.py             # 6 workflow templates & small/medium/large/hard presets
+│   ├── protocol.py              # twinstep/stepbot protocol importers & workcell queue exporter
+│   ├── checker.py               # Completeness, temporal window, arm, and sweep-line capacity checker
+│   ├── greedy.py                # O(K log K) greedy baseline & coupled right-shift greedy_repair
+│   ├── cpsat.py                 # Warm-started OR-Tools CP-SAT solver (hard/soft deadlines, tie-break)
 │   ├── metrics.py               # Makespan, tardiness, mean flow, violations, and dual gap%
 │   ├── gantt.py                 # Job-oriented ASCII Gantt chart renderer
-│   ├── bench.py                 # Suite runner & ASCII summary table formatter
-│   └── cli.py                   # `labshift bench | gantt | generate | check` CLI
+│   ├── bench.py                 # Suite runner, JSON exporter, & ASCII summary table formatter
+│   └── cli.py                   # `labshift solve | bench | gantt | generate | check` CLI
 ├── docs/
 │   └── ARCHITECTURE_AND_HISTORY.md
-└── tests/                       # Checker, model/generator, solver, and CLI/Gantt tests
+└── tests/                       # Checker, model, solver, CLI/Gantt, and protocol tests
 ```
 
 ## Quickstart
 
-Run the benchmark suite with the greedy baseline or OR-Tools CP-SAT:
+Run the benchmark suite with the myopic greedy baseline, the window-aware `greedy_repair` heuristic, or OR-Tools CP-SAT:
 
 ```bash
 labshift bench --solver greedy benchmarks/
+labshift bench --solver greedy_repair benchmarks/
 labshift bench --solver cpsat --time-limit 5 benchmarks/
 ```
 
-Render an ASCII Gantt chart for a single instance:
+Solve an instance to a saved `Schedule` JSON, validate it with the independent checker, and render an ASCII Gantt chart:
 
 ```bash
-labshift gantt --solver cpsat --time-limit 5 benchmarks/small_00.json
+labshift solve benchmarks/small_00.json --solver cpsat --workers 1 --seed 0 --tie-break-flow --out schedule.json
+labshift check benchmarks/small_00.json schedule.json
+labshift gantt --schedule schedule.json benchmarks/small_00.json
 ```
 
-Generate a new synthetic instance or check an existing schedule:
+Generate a new synthetic instance (optionally verifying feasibility or using the congested `hard` preset):
 
 ```bash
-labshift generate --preset medium --seed 42 --out /tmp/medium_42.json
-labshift check instance.json schedule.json
+labshift generate --preset hard --seed 42 --ensure-feasible --out hard_42.json
 ```
 
 ## Example Output
 
-All outputs below were measured on a CPU-only Linux box, 2026-11-18.
+The `greedy` and `cpsat` tables below were measured on a CPU-only Linux box on 2026-11-18; the `greedy_repair` summary was measured on CPU on 2026-11-22 against the identical 30 committed `benchmarks/*.json` instances.
 
 ### Greedy Baseline (`labshift bench --solver greedy --time-limit 5 benchmarks/`)
 
@@ -124,8 +131,12 @@ large_07  | large  | OK     | yes  |      156 |         0 |      71.7 |        0
 large_08  | large  | OK     | yes  |      151 |         0 |      81.8 |        0 |     - |    - |  0.001
 large_09  | large  | OK     | yes  |      147 |         0 |      67.3 |        0 |     - |    - |  0.001
 ----------+--------+--------+------+----------+-----------+-----------+----------+-------+------+-------
-ALL (30)  | -      | -      | 24/30 |    129.8 |         0 |      72.3 |       13 |     - |    - |  0.012
+ALL (30)  | -      | 30/30  | 24/30 |    129.8 |         0 |      72.3 |       13 |     - |    - |  0.012
 ```
+
+### Window-Aware Coupled Heuristic (`labshift bench --solver greedy_repair benchmarks/`)
+
+Measured on CPU (2026-11-22, Python 3.11, stdlib-only): `30/30` solved, `30/30` feasible (`0` window violations), `129.2` min mean makespan, `70.6` min mean flow time, `0.117 s` total across all 30 instances.
 
 ### OR-Tools CP-SAT (`labshift bench --solver cpsat --time-limit 5 benchmarks/`)
 
@@ -163,7 +174,7 @@ large_07  | large  | FEASIBLE | yes  |      136 |         0 |      71.5 |       
 large_08  | large  | FEASIBLE | yes  |      134 |         0 |      77.0 |        0 | 119.0 | 11.2 |  5.008
 large_09  | large  | FEASIBLE | yes  |      136 |         0 |      69.8 |        0 | 118.0 | 13.2 |  5.007
 ----------+--------+----------+------+----------+-----------+-----------+----------+-------+------+-------
-ALL (30)  | -      | -        | 30/30 |    116.7 |         0 |      68.9 |        0 |     - |  5.5 | 78.868
+ALL (30)  | -      | 30/30    | 30/30 |    116.7 |         0 |      68.9 |        0 |     - |  5.5 | 78.868
 ```
 
 ### ASCII Gantt Chart (`labshift gantt --solver cpsat --time-limit 5 benchmarks/small_00.json`)
@@ -182,19 +193,24 @@ job_06 |          ...LLLLLLLLLLLLLLL.IIIIIIIIIIIIIIIRRRR............| L[24-39], 
 t(m)   |0           21          42         63          84        105|
 ```
 
+**Reproducibility & Tie-Breaking Notes:**
+- In the 2026-11-18 runs above (with default pure-makespan objective and 4 parallel workers), the Gantt chart and CP-SAT table for `small_00` both achieved optimal makespan `105` but reported different `mean_flow` (`70.0` vs `82.2`), because two schedules can share the optimal makespan with different secondary flow times. Passing `--tie-break-flow --workers 1 --seed 0` makes `solve_cpsat` deterministic and lexicographically minimizes flow time beneath makespan (achieving `makespan = 105` and proven minimal `mean_flow = 66.0` on `small_00`).
+- Unsolved (`INFEASIBLE` / `UNKNOWN`) rows report `"-"` for `makespan` and `mean_flow` and are excluded from the `ALL (n)` column averages; the `status` summary cell explicitly reports `<solved>/<n>`.
+- The committed files in `benchmarks/` were generated with `labshift generate --suite-dir benchmarks --seed 1000` (seeds `1000–1009`, `1100–1109`, `1200–1209`), which is the default seed when `--suite-dir` is set.
+- Note on v1 suite bottleneck contention: `medium` (`12` jobs, `release_max=40`, `1` `plate_reader` => `0.30` jobs/min/reader) has higher per-reader arrival intensity than `large` (`20` jobs, `release_max=60`, `2` `plate_reader`s => `0.167` jobs/min/reader), explaining why myopic `greedy` is `4/10` feasible on `medium` vs `10/10` on `large`. Use `--preset hard` (`20` jobs, `release_max=45`, `1` `plate_reader` => `0.44` jobs/min/reader; `2/10` greedy feasible vs `10/10` `greedy_repair` on seeds `1300–1309`) to stress-test high-contention workcells.
+
 ## How It Works
 
-1. **Models (`labshift.models`)**: Frozen dataclasses define `Operation`, `Job`, `Instance`, `ScheduledOp`, and `Schedule` with JSON round-trip helpers.
-2. **Generator (`labshift.generator`)**: Combines generic liquid-handling workflow templates (`plate_prep`, `dilution_series`, `buffer_add`, `dye_dispense`, `mix_wash`, `plate_wash`, `spin_down`, `incubate`, `equilibrate`, `plate_read`) with seeded release times, wait windows, and deadlines.
-3. **Checker (`labshift.checker`)**: Verifies completeness, operation durations, job release times, precedence, `min_wait`/`max_wait` windows, deadlines, and exact interval sweep-line capacity per instrument pool.
+1. **Models (`labshift.models`)**: Frozen validated dataclasses define `Operation` (with optional `transfer_time`), `Job`, `Instance`, `ScheduledOp`, and `Schedule` with JSON round-trip helpers.
+2. **Generator & Protocol Adapters (`labshift.generator`, `labshift.protocol`)**: `generator.py` samples seeded liquid-handling workflows across `small`, `medium`, `large`, and `hard` presets (with optional `ensure_feasible=True`). `protocol.py` converts concrete `twinstep` / `stepbot` protocol step sequences into `Job` / `Instance` objects and exports scheduled timelines to workcell execution queues.
+3. **Checker (`labshift.checker`)**: Independently verifies `instance_name` match, completeness, `unknown_instrument` / `wrong_instrument` routing, `negative_start`, `duration`, `release`, `precedence`, `min_wait` / `max_wait` / `transfer_time` windows, `deadline`, and departure-first sweep-line `capacity` across instruments and `robot_arm`.
 4. **Solvers (`labshift.greedy`, `labshift.cpsat`)**:
-   - `greedy` dispatches ready operations in `(ready_time, deadline, duration, job_id)` order onto the earliest feasible instrument slot. Because it acts without lookahead, it can violate `max_wait` windows under contention.
-   - `cpsat` models each operation as an OR-Tools CP-SAT interval variable, enforces `no_overlap` (capacity 1) or `cumulative` (capacity > 1) per instrument pool, enforces precedence, time windows, and hard deadlines, and minimizes `makespan`.
+   - `greedy` dispatches ready operations in `(ready_time, deadline, duration, job_id)` order via an `O(K log K)` event-profile sweep.
+   - `greedy_repair` schedules contiguous `max_wait`-coupled operation segments atomically via right-shift propagation across deterministic priority rules (`30/30` feasible on `benchmarks/`).
+   - `cpsat` tightens `IntervalVar` domains via forward/backward chain propagation, warm-starts from `greedy` / `greedy_repair`, enforces `no_overlap` or `cumulative` across stations and `robot_arm`, and supports pure makespan, lexicographic `--tie-break-flow`, and `--soft-deadlines` tardiness optimization.
 
 ## Limits
 
-- **Run-to-run variation**: CP-SAT with a time limit is not fully deterministic. A second run of the table above gave the same makespan and gap, with mean flow 68.8 instead of 68.9.
-- **Synthetic workloads only**: Durations, capacities, and templates are synthetic integer-minute abstractions and do not model deck layouts, tip racks, or physical transfer setup times.
-- **Hard deadlines in CP-SAT**: `cpsat` treats job deadlines as hard constraints and returns `INFEASIBLE` if no schedule satisfies every deadline, rather than minimizing tardiness softly.
-- **Single makespan objective**: `cpsat` minimizes `makespan` only; alternate optimal solutions with the same makespan can exhibit different `mean_flow_time` values.
-- **Myopic greedy baseline**: `greedy` does not perform lookahead or repair for `max_wait` windows or deadlines; violations are reported explicitly by the checker.
+- **Multi-worker time-limit variation**: Multi-worker CP-SAT (`--workers 4`) under a wall-clock time limit can vary slightly across machines; pass `--workers 1 --seed <int> --tie-break-flow` when bit-exact CP-SAT reproducibility is required.
+- **Abstracted station mechanics**: Durations, capacities, and optional `transfer_time` represent discrete integer-minute station and arm reservations rather than continuous 3D trajectory planning or tip/reagent inventory depletion.
+- **Heuristic optimality gap**: `greedy_repair` eliminates `max_wait` violations on `benchmarks/` (`30/30` feasible) without external dependencies, but does not prove global makespan optimality (`129.2` min vs `116.7` min for `cpsat`).

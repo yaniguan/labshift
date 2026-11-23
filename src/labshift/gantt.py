@@ -12,6 +12,7 @@ _INST_SYMBOL: dict[str, str] = {
     "plate_reader": "R",
     "centrifuge": "C",
     "washer": "W",
+    "robot_arm": "A",
 }
 
 
@@ -21,20 +22,38 @@ def render_gantt(
     width: int = 60,
 ) -> str:
     """Render a job-oriented ASCII Gantt chart with legend and metrics."""
+    if isinstance(width, bool) or not isinstance(width, int):
+        raise TypeError(f"Gantt width must be an integer, got {width!r}.")
+    if width < 10:
+        raise ValueError(f"Gantt width must be >= 10, got {width}.")
+
     check = check_schedule(instance, schedule)
     metrics = compute_metrics(instance, schedule, check=check)
-    horizon = max(metrics.makespan, 1)
+    max_release = max((j.release for j in instance.jobs), default=0)
+    max_op_end = max((op.end for op in schedule.ops), default=0)
+    horizon = max(metrics.makespan or 0, max_op_end, max_release, 1)
     by_key = schedule.by_key()
 
     label_w = max((len(j.job_id) for j in instance.jobs), default=6)
+    ms_text = f"{metrics.makespan}m" if metrics.makespan is not None else "-"
+    flow_text = (
+        f"{metrics.mean_flow_time:.1f}m" if metrics.mean_flow_time is not None else "-"
+    )
+    legend = (
+        "Legend: [L] liquid_handler  [I] incubator  [R] plate_reader  "
+        "[C] centrifuge  [W] washer"
+    )
+    if "robot_arm" in instance.capacities:
+        legend += "  [A] robot_arm"
+
     lines: list[str] = [
         f"Instance: {instance.name} | Solver: {schedule.solver} ({schedule.status})",
         (
-            f"Makespan: {metrics.makespan}m | Feasible: {metrics.feasible} | "
-            f"Tardiness: {metrics.total_tardiness}m | MeanFlow: {metrics.mean_flow_time:.1f}m | "
+            f"Makespan: {ms_text} | Feasible: {metrics.feasible} | "
+            f"Tardiness: {metrics.total_tardiness}m | MeanFlow: {flow_text} | "
             f"WinViol: {metrics.window_violations}"
         ),
-        "Legend: [L] liquid_handler  [I] incubator  [R] plate_reader  [C] centrifuge  [W] washer",
+        legend,
         "",
     ]
 
@@ -52,7 +71,10 @@ def render_gantt(
             c0 = min(width - 1, max(0, int(sop.start * width / horizon)))
             c1 = min(width, max(c0 + 1, int((sop.end * width + horizon - 1) // horizon)))
             for c in range(c0, c1):
-                bar[c] = sym
+                if bar[c] not in (".", " "):
+                    bar[c] = "*"
+                else:
+                    bar[c] = sym
         spans = ", ".join(
             f"{_INST_SYMBOL.get(op.instrument, '?')}[{op.start}-{op.end}]"
             for op in (

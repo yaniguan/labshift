@@ -81,7 +81,7 @@ def _check_completeness_and_durations(
         if sop.instrument != exp_inst:
             violations.append(
                 Violation(
-                    kind="duration",
+                    kind="wrong_instrument",
                     message=(
                         f"Op {key} instrument '{sop.instrument}' != expected '{exp_inst}'."
                     ),
@@ -90,7 +90,17 @@ def _check_completeness_and_durations(
                     instrument=sop.instrument,
                 )
             )
-        if sop.start < 0 or sop.end - sop.start != exp_dur:
+        if sop.start < 0:
+            violations.append(
+                Violation(
+                    kind="negative_start",
+                    message=f"Op {key} starts at negative time {sop.start}.",
+                    job_id=sop.job_id,
+                    op_index=sop.op_index,
+                    time=sop.start,
+                )
+            )
+        if sop.end - sop.start != exp_dur:
             violations.append(
                 Violation(
                     kind="duration",
@@ -159,13 +169,25 @@ def _check_job_constraints(
                         time=curr_op.start,
                     )
                 )
-                continue
-            if wait < spec.min_wait:
+            if spec.min_wait > 0 and wait < spec.min_wait:
                 violations.append(
                     Violation(
                         kind="min_wait",
                         message=(
                             f"Job {job.job_id} op {idx} wait {wait} < min_wait {spec.min_wait}."
+                        ),
+                        job_id=job.job_id,
+                        op_index=idx,
+                        time=curr_op.start,
+                    )
+                )
+            if spec.transfer_time > 0 and wait < spec.transfer_time:
+                violations.append(
+                    Violation(
+                        kind="transfer_time",
+                        message=(
+                            f"Job {job.job_id} op {idx} wait {wait} "
+                            f"< transfer_time {spec.transfer_time}."
                         ),
                         job_id=job.job_id,
                         op_index=idx,
@@ -207,17 +229,30 @@ def _check_job_constraints(
 def _check_capacities(
     instance: Instance,
     ops: tuple[ScheduledOp, ...],
+    by_key: dict[tuple[str, int], ScheduledOp],
 ) -> list[Violation]:
     violations: list[Violation] = []
-    by_inst: dict[str, list[ScheduledOp]] = defaultdict(list)
+    by_inst: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for sop in ops:
-        by_inst[sop.instrument].append(sop)
+        by_inst[sop.instrument].append((sop.start, sop.end))
 
-    for inst, inst_ops in sorted(by_inst.items()):
+    if "robot_arm" in instance.capacities:
+        for job in instance.jobs:
+            for idx in range(1, len(job.ops)):
+                spec = job.ops[idx]
+                if spec.transfer_time <= 0:
+                    continue
+                prev_op = by_key.get((job.job_id, idx - 1))
+                curr_op = by_key.get((job.job_id, idx))
+                if prev_op is None or curr_op is None:
+                    continue
+                by_inst["robot_arm"].append((curr_op.start - spec.transfer_time, curr_op.start))
+
+    for inst, intervals in sorted(by_inst.items()):
         cap = instance.capacities.get(inst)
         if cap is None:
             continue
-        if cap <= 0 and any(op.end > op.start for op in inst_ops):
+        if cap <= 0 and intervals:
             violations.append(
                 Violation(
                     kind="capacity",
@@ -228,10 +263,10 @@ def _check_capacities(
             continue
 
         events: list[tuple[int, int]] = []
-        for op in inst_ops:
-            if op.end > op.start:
-                events.append((op.start, 1))
-                events.append((op.end, -1))
+        for start, end in intervals:
+            if end > start:
+                events.append((start, 1))
+                events.append((end, -1))
         # Process departures (-1) before arrivals (+1) at identical timestamps.
         events.sort(key=lambda item: (item[0], item[1]))
 
@@ -262,8 +297,20 @@ def _check_capacities(
 
 
 def check_schedule(instance: Instance, schedule: Schedule) -> CheckResult:
-    """Validate precedence, capacity, time windows, release times, and deadlines."""
-    by_key, violations = _check_completeness_and_durations(instance, schedule)
+    """Validate instance match, completeness, precedence, capacity, windows, and deadlines."""
+    violations: list[Violation] = []
+    if schedule.instance_name != instance.name:
+        violations.append(
+            Violation(
+                kind="instance_mismatch",
+                message=(
+                    f"Schedule instance_name '{schedule.instance_name}' != "
+                    f"instance name '{instance.name}'."
+                ),
+            )
+        )
+    by_key, comp_violations = _check_completeness_and_durations(instance, schedule)
+    violations.extend(comp_violations)
     violations.extend(_check_job_constraints(instance, by_key))
-    violations.extend(_check_capacities(instance, schedule.ops))
+    violations.extend(_check_capacities(instance, schedule.ops, by_key))
     return CheckResult(feasible=(len(violations) == 0), violations=tuple(violations))
