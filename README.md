@@ -28,6 +28,40 @@ Requires Python 3.11+.
 pip install -e .[dev]
 ```
 
+Part of **[Robot AI Auto-Lab (`auto-lab`)](https://github.com/yaniguan/auto-lab)** ([Project Studio](https://yaniguan.github.io/auto-lab/)) — **Layer `L5 · Executive Planning, Procurement & Scheduling`**.
+
+## System Profile: Object · Data · Model · Training · History · Unique Properties
+
+Full code-level architecture, CP-SAT formulation, benchmark analysis (`main` vs open PR `origin/review-fixes`), and history are documented in **[`docs/ARCHITECTURE_AND_HISTORY.md`](docs/ARCHITECTURE_AND_HISTORY.md)**:
+
+- **Object**: Executive multi-instrument lab scheduling benchmark, sweep-line verifier, greedy baseline, and OR-Tools CP-SAT solver over shared `liquid_handler`, `incubator`, `plate_reader`, `centrifuge`, and `washer` pools with coupled `min_wait`/`max_wait` perishability windows, release times, and deadlines.
+- **Data**: Frozen JSON-serializable models (`Instance`, `Job`, `Operation`, `Schedule`, `ScheduledOp`), 6 seeded assay workflow templates, and a committed 30-instance MIT-licensed benchmark suite (`small_00..09`, `medium_00..09`, `large_00..09`, seeds `1000..1209`).
+- **Model**: Independent departure-first `(t, -1)` sweep-line feasibility checker (`labshift.checker`), priority list-scheduling baseline (`labshift.greedy`), and OR-Tools CP-SAT `IntervalVar` + `no_overlap`/`cumulative` makespan optimizer (`labshift.cpsat`) with dual `best_bound` gap certificates.
+- **Training**: Verifiable combinatorial planning & RLVR reward environment (no internal neural weights; on the 30-instance CPU benchmark, `cpsat` achieves `30/30` feasibility and `116.7` min mean makespan with `5.5%` mean optimality gap vs `greedy` at `24/30` feasibility, `129.8` min makespan, and `13` `max_wait` violations).
+- **History**: Initial release `124a6d7` on `main` (`0.1.0`, 30 benchmark instances, 4 test suites) and open PR `origin/review-fixes` (`58ec7f2`, aligning `--suite-dir` default `--seed 1000` and documenting `mean_flow` non-uniqueness under pure makespan minimization).
+- **Unique Properties**: Exact half-open interval sweep-line verification, perishability window stress-testing, dual optimality bounds, and clean interfaces with [`labfill`](https://github.com/yaniguan/labfill), [`lab-decide`](https://github.com/yaniguan/lab-decide), [`buy-or-make`](https://github.com/yaniguan/buy-or-make), [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal), [`lab-verify`](https://github.com/yaniguan/lab-verify), [`YLM`](https://github.com/yaniguan/YLM) LabLean, and [`stepbot`](https://github.com/yaniguan/stepbot).
+
+## Repository Layout
+
+```text
+labshift/
+├── benchmarks/                  # 30 seeded JSON instances (small_00..09, medium_00..09, large_00..09)
+├── src/labshift/
+│   ├── __init__.py              # Public API exports
+│   ├── models.py                # Frozen dataclasses & JSON serialization
+│   ├── generator.py             # 6 workflow templates & small/medium/large presets
+│   ├── checker.py               # Completeness, temporal window, and sweep-line capacity checker
+│   ├── greedy.py                # Earliest-slot priority list-scheduling baseline
+│   ├── cpsat.py                 # OR-Tools CP-SAT interval & cumulative solver
+│   ├── metrics.py               # Makespan, tardiness, mean flow, violations, and dual gap%
+│   ├── gantt.py                 # Job-oriented ASCII Gantt chart renderer
+│   ├── bench.py                 # Suite runner & ASCII summary table formatter
+│   └── cli.py                   # `labshift bench | gantt | generate | check` CLI
+├── docs/
+│   └── ARCHITECTURE_AND_HISTORY.md
+└── tests/                       # Checker, model/generator, solver, and CLI/Gantt tests
+```
+
 ## Quickstart
 
 Run the benchmark suite with the greedy baseline or OR-Tools CP-SAT:
