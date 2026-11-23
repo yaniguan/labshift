@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from labshift.checker import check_schedule
+from labshift.greedy import solve_greedy_repair
 from labshift.models import Instance, Job, Operation
 
 # Generic liquid-handling workflow steps: (op_name, instrument, (min_dur, max_dur))
@@ -67,6 +70,14 @@ class PresetConfig:
     deadline_slack_factor: float
 
 
+# Note on v1 suite arrival intensity (benchmarks/small_00..large_09):
+# - "small" (6 jobs, release_max=20, 1 plate_reader) sets max_wait_prob=0.0.
+# - "medium" (12 jobs, release_max=40, 1 plate_reader => 0.30 jobs/min/reader)
+#   creates heavy single-reader contention under max_wait_prob=0.5 (4/10 greedy feasible).
+# - "large" (20 jobs, release_max=60, 2 plate_readers => 0.167 jobs/min/reader)
+#   models a scaled-out two-reader workcell (10/10 greedy feasible on v1 seeds).
+# - "hard" (20 jobs, release_max=45, 1 plate_reader => 0.44 jobs/min/reader)
+#   scales bottleneck arrival intensity monotonically above "medium" for stress-testing.
 PRESETS: dict[str, PresetConfig] = {
     "small": PresetConfig(
         num_jobs=6,
@@ -119,20 +130,39 @@ PRESETS: dict[str, PresetConfig] = {
         deadline_prob=0.65,
         deadline_slack_factor=2.4,
     ),
+    "hard": PresetConfig(
+        num_jobs=20,
+        ops_min=4,
+        ops_max=6,
+        release_max=45,
+        capacities={
+            "liquid_handler": 2,
+            "incubator": 3,
+            "plate_reader": 1,
+            "centrifuge": 2,
+            "washer": 2,
+        },
+        max_wait_prob=0.65,
+        max_wait_range=(6, 14),
+        deadline_prob=0.65,
+        deadline_slack_factor=2.8,
+    ),
 }
 
+DEFAULT_SUITE_PRESETS: tuple[str, ...] = ("small", "medium", "large")
 
-def generate_instance(
-    preset: str = "small",
-    seed: int = 0,
-    name: str | None = None,
+
+def _sample_from_config(
+    cfg: PresetConfig,
+    preset: str,
+    rng_seed: int,
+    recorded_seed: int,
+    inst_name: str,
+    *,
+    slack_bonus: int = 0,
+    window_bonus: int = 0,
 ) -> Instance:
-    """Generate a synthetic lab scheduling instance for the given preset and seed."""
-    if preset not in PRESETS:
-        raise ValueError(f"Unknown preset '{preset}'. Choose from {tuple(PRESETS)}.")
-
-    cfg = PRESETS[preset]
-    rng = random.Random(seed)
+    rng = random.Random(rng_seed)
     eligible = [
         tpl
         for tpl in _WORKFLOW_TEMPLATES
@@ -159,7 +189,7 @@ def generate_instance(
                 prev_inst = tpl[op_idx - 1][1]
                 tight_step = prev_inst in ("incubator", "centrifuge") or op_name == "plate_read"
                 if tight_step and rng.random() < cfg.max_wait_prob:
-                    max_wait = min_wait + rng.randint(*cfg.max_wait_range)
+                    max_wait = min_wait + rng.randint(*cfg.max_wait_range) + window_bonus
                 else:
                     max_wait = None
             ops.append(
@@ -175,7 +205,11 @@ def generate_instance(
         deadline: int | None = None
         if rng.random() < cfg.deadline_prob:
             min_chain = total_dur + sum(op.min_wait for op in ops)
-            slack = int(round(min_chain * cfg.deadline_slack_factor)) + cfg.num_jobs * 3
+            slack = (
+                round(min_chain * cfg.deadline_slack_factor)
+                + cfg.num_jobs * 3
+                + slack_bonus
+            )
             deadline = release + slack
 
         jobs.append(
@@ -187,13 +221,65 @@ def generate_instance(
             )
         )
 
-    inst_name = name or f"{preset}_{seed:02d}"
     return Instance(
         name=inst_name,
         preset=preset,
-        seed=seed,
+        seed=recorded_seed,
         capacities=dict(cfg.capacities),
         jobs=tuple(jobs),
+    )
+
+
+def _is_verified_feasible(instance: Instance) -> bool:
+    """Return True if a feasible schedule can be verified via greedy_repair or CP-SAT."""
+    rep_sched = solve_greedy_repair(instance)
+    if check_schedule(instance, rep_sched).feasible:
+        return True
+    try:
+        from labshift.cpsat import solve_cpsat
+    except ImportError:
+        return False
+    cp_sched = solve_cpsat(instance, time_limit=2.0, num_workers=2)
+    return bool(cp_sched.ops) and check_schedule(instance, cp_sched).feasible
+
+
+def generate_instance(
+    preset: str = "small",
+    seed: int = 0,
+    name: str | None = None,
+    *,
+    ensure_feasible: bool = False,
+) -> Instance:
+    """Generate a synthetic lab scheduling instance for the given preset and seed."""
+    if preset not in PRESETS:
+        raise ValueError(f"Unknown preset '{preset}'. Choose from {tuple(PRESETS)}.")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(f"'seed' must be an integer, got {seed!r}.")
+
+    cfg = PRESETS[preset]
+    inst_name = name or f"{preset}_{seed:02d}"
+    inst = _sample_from_config(cfg, preset, seed, seed, inst_name)
+    if not ensure_feasible:
+        return inst
+
+    if _is_verified_feasible(inst):
+        return inst
+
+    for attempt in range(1, 16):
+        relaxed = _sample_from_config(
+            cfg,
+            preset,
+            seed,
+            seed,
+            inst_name,
+            slack_bonus=attempt * max(15, cfg.num_jobs * 4),
+            window_bonus=attempt * 4,
+        )
+        if _is_verified_feasible(relaxed):
+            return relaxed
+
+    raise RuntimeError(
+        f"Unable to verify a feasible instance for preset='{preset}', seed={seed}."
     )
 
 
@@ -201,18 +287,29 @@ def generate_benchmark_suite(
     out_dir: str | Path,
     count_per_preset: int = 10,
     base_seed: int = 1000,
+    *,
+    presets: Sequence[str] = DEFAULT_SUITE_PRESETS,
+    ensure_feasible: bool = False,
 ) -> list[Path]:
-    """Generate a fixed benchmark set of small/medium/large instances in out_dir."""
+    """Generate a fixed benchmark set of instances in out_dir."""
+    if isinstance(count_per_preset, bool) or not isinstance(count_per_preset, int):
+        raise TypeError(f"'count_per_preset' must be an integer, got {count_per_preset!r}.")
+    if count_per_preset < 1:
+        raise ValueError(f"'count_per_preset' must be >= 1, got {count_per_preset}.")
+    if isinstance(base_seed, bool) or not isinstance(base_seed, int):
+        raise TypeError(f"'base_seed' must be an integer, got {base_seed!r}.")
+
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for p_idx, preset in enumerate(("small", "medium", "large")):
+    for p_idx, preset in enumerate(presets):
         for idx in range(count_per_preset):
             seed = base_seed + p_idx * 100 + idx
             inst = generate_instance(
                 preset=preset,
                 seed=seed,
                 name=f"{preset}_{idx:02d}",
+                ensure_feasible=ensure_feasible,
             )
             path = root / f"{preset}_{idx:02d}.json"
             inst.save_json(path)

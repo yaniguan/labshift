@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from labshift.checker import check_schedule
+from labshift.metrics import compute_metrics
 from labshift.models import Instance, Job, Operation, Schedule, ScheduledOp
 
 
@@ -83,15 +84,35 @@ def test_catches_missing_and_extra_and_duplicate_ops() -> None:
     assert "extra_op" in res_dup.counts_by_kind()
 
 
-def test_catches_unknown_instrument_and_duration_mismatch() -> None:
+def test_catches_unknown_instrument_wrong_instrument_negative_start_and_duration() -> None:
     inst = _sample_instance()
     base = list(_valid_schedule().ops)
 
+    # Unknown instrument (not in capacities) with valid duration -> unknown_instrument + wrong_instrument, NOT duration
     bad_inst = list(base)
     bad_inst[0] = ScheduledOp("j2", 0, "centrifuge", 0, 5, "prep")
     res_inst = check_schedule(inst, Schedule("tiny", "manual", tuple(bad_inst)))
-    assert "unknown_instrument" in res_inst.counts_by_kind()
+    counts_inst = res_inst.counts_by_kind()
+    assert counts_inst.get("unknown_instrument") == 1
+    assert counts_inst.get("wrong_instrument") == 1
+    assert "duration" not in counts_inst
 
+    # Known wrong instrument (in capacities) with valid duration -> wrong_instrument only
+    wrong_known = list(base)
+    wrong_known[0] = ScheduledOp("j2", 0, "incubator", 0, 5, "prep")
+    res_wrong = check_schedule(inst, Schedule("tiny", "manual", tuple(wrong_known)))
+    counts_wrong = res_wrong.counts_by_kind()
+    assert counts_wrong == {"wrong_instrument": 1}
+
+    # Negative start with matching duration -> negative_start (and release if < release)
+    neg_start = list(base)
+    neg_start[0] = ScheduledOp("j2", 0, "liquid_handler", -2, 3, "prep")
+    res_neg = check_schedule(inst, Schedule("tiny", "manual", tuple(neg_start)))
+    counts_neg = res_neg.counts_by_kind()
+    assert counts_neg.get("negative_start") == 1
+    assert "duration" not in counts_neg
+
+    # Bad duration on right instrument -> duration only
     bad_dur = list(base)
     bad_dur[0] = ScheduledOp("j2", 0, "liquid_handler", 0, 7, "prep")
     res_dur = check_schedule(inst, Schedule("tiny", "manual", tuple(bad_dur)))
@@ -111,7 +132,7 @@ def test_catches_release_violation() -> None:
     assert "release" in res.counts_by_kind()
 
 
-def test_catches_precedence_min_wait_and_max_wait() -> None:
+def test_catches_precedence_min_wait_max_wait_and_instance_mismatch() -> None:
     inst = _sample_instance()
 
     prec_ops = (
@@ -120,7 +141,22 @@ def test_catches_precedence_min_wait_and_max_wait() -> None:
         ScheduledOp("j1", 0, "liquid_handler", 5, 10, "prep"),
         ScheduledOp("j1", 1, "incubator", 12, 22, "inc"),
     )
-    assert "precedence" in check_schedule(inst, Schedule("tiny", "manual", prec_ops)).counts_by_kind()
+    res_prec = check_schedule(inst, Schedule("tiny", "manual", prec_ops))
+    assert "precedence" in res_prec.counts_by_kind()
+    assert "min_wait" not in res_prec.counts_by_kind()  # j2 op 1 has min_wait == 0
+
+    # When wait < 0 AND spec.min_wait > 0 (j1 op 1 has min_wait=2), both precedence and min_wait are recorded
+    both_ops = (
+        ScheduledOp("j2", 0, "liquid_handler", 0, 5, "prep"),
+        ScheduledOp("j2", 1, "plate_reader", 5, 9, "read"),
+        ScheduledOp("j1", 0, "liquid_handler", 5, 10, "prep"),
+        ScheduledOp("j1", 1, "incubator", 9, 19, "inc"),
+    )
+    sched_both = Schedule("tiny", "manual", both_ops)
+    res_both = check_schedule(inst, sched_both)
+    assert res_both.counts_by_kind().get("precedence") == 1
+    assert res_both.counts_by_kind().get("min_wait") == 1
+    assert compute_metrics(inst, sched_both, check=res_both).window_violations == 1
 
     min_ops = (
         ScheduledOp("j2", 0, "liquid_handler", 0, 5, "prep"),
@@ -138,8 +174,14 @@ def test_catches_precedence_min_wait_and_max_wait() -> None:
     )
     assert "max_wait" in check_schedule(inst, Schedule("tiny", "manual", max_ops)).counts_by_kind()
 
+    # Instance mismatch
+    mismatch = Schedule("wrong_name", "manual", _valid_schedule().ops)
+    res_mm = check_schedule(inst, mismatch)
+    assert not res_mm.feasible
+    assert res_mm.counts_by_kind() == {"instance_mismatch": 1}
 
-def test_catches_capacity_and_deadline() -> None:
+
+def test_catches_capacity_above_one_zero_capacity_and_deadline() -> None:
     inst = _sample_instance()
 
     cap_ops = (
@@ -161,3 +203,113 @@ def test_catches_capacity_and_deadline() -> None:
     res_dead = check_schedule(inst, Schedule("tiny", "manual", dead_ops))
     assert not res_dead.feasible
     assert "deadline" in res_dead.counts_by_kind()
+
+    # Capacity > 1 (incubator=2): 2 concurrent ops pass, 3 concurrent ops fail
+    multi_inst = Instance(
+        name="cap2",
+        capacities={"incubator": 2},
+        jobs=tuple(
+            Job(job_id=f"j{i}", ops=(Operation("inc", "incubator", duration=10),))
+            for i in range(1, 4)
+        ),
+    )
+    ok_cap2 = Schedule(
+        "cap2",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "incubator", 0, 10, "inc"),
+            ScheduledOp("j2", 0, "incubator", 2, 12, "inc"),
+            ScheduledOp("j3", 0, "incubator", 10, 20, "inc"),
+        ),
+    )
+    assert check_schedule(multi_inst, ok_cap2).feasible
+
+    bad_cap2 = Schedule(
+        "cap2",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "incubator", 0, 10, "inc"),
+            ScheduledOp("j2", 0, "incubator", 2, 12, "inc"),
+            ScheduledOp("j3", 0, "incubator", 5, 15, "inc"),
+        ),
+    )
+    res_bad_cap2 = check_schedule(multi_inst, bad_cap2)
+    assert res_bad_cap2.counts_by_kind() == {"capacity": 1}
+
+    # Zero-capacity instrument flags capacity violation even if scheduled op has 0 span
+    zero_inst = Instance(
+        name="zero",
+        capacities={"liquid_handler": 0},
+        jobs=(Job("j1", ops=(Operation("prep", "liquid_handler", duration=5),)),),
+    )
+    zero_sched = Schedule(
+        "zero", "manual", ops=(ScheduledOp("j1", 0, "liquid_handler", 0, 0, "prep"),)
+    )
+    res_zero = check_schedule(zero_inst, zero_sched)
+    assert "capacity" in res_zero.counts_by_kind()
+    assert "duration" in res_zero.counts_by_kind()
+
+
+def test_transfer_time_and_robot_arm_capacity() -> None:
+    inst = Instance(
+        name="arm_cell",
+        capacities={"liquid_handler": 2, "plate_reader": 2, "robot_arm": 1},
+        jobs=(
+            Job(
+                job_id="j1",
+                ops=(
+                    Operation("prep", "liquid_handler", duration=5),
+                    Operation("read", "plate_reader", duration=4, transfer_time=3),
+                ),
+            ),
+            Job(
+                job_id="j2",
+                ops=(
+                    Operation("prep", "liquid_handler", duration=5),
+                    Operation("read", "plate_reader", duration=4, transfer_time=3),
+                ),
+            ),
+        ),
+    )
+
+    # Insufficient transfer gap (wait=2 < transfer_time=3)
+    short_gap = Schedule(
+        "arm_cell",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "liquid_handler", 0, 5, "prep"),
+            ScheduledOp("j1", 1, "plate_reader", 7, 11, "read"),
+            ScheduledOp("j2", 0, "liquid_handler", 0, 5, "prep"),
+            ScheduledOp("j2", 1, "plate_reader", 11, 15, "read"),
+        ),
+    )
+    res_gap = check_schedule(inst, short_gap)
+    assert res_gap.counts_by_kind() == {"transfer_time": 1}
+
+    # Overlapping robot_arm transfers: [5, 8) and [6, 9) on capacity-1 arm
+    arm_clash = Schedule(
+        "arm_cell",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "liquid_handler", 0, 5, "prep"),
+            ScheduledOp("j1", 1, "plate_reader", 8, 12, "read"),
+            ScheduledOp("j2", 0, "liquid_handler", 0, 5, "prep"),
+            ScheduledOp("j2", 1, "plate_reader", 9, 13, "read"),
+        ),
+    )
+    res_clash = check_schedule(inst, arm_clash)
+    assert res_clash.counts_by_kind() == {"capacity": 1}
+    assert res_clash.violations[0].instrument == "robot_arm"
+
+    # Staggered robot_arm transfers: [5, 8) and [8, 11) -> valid!
+    staggered = Schedule(
+        "arm_cell",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "liquid_handler", 0, 5, "prep"),
+            ScheduledOp("j1", 1, "plate_reader", 8, 12, "read"),
+            ScheduledOp("j2", 0, "liquid_handler", 0, 5, "prep"),
+            ScheduledOp("j2", 1, "plate_reader", 11, 15, "read"),
+        ),
+    )
+    assert check_schedule(inst, staggered).feasible
