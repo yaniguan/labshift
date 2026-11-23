@@ -16,8 +16,10 @@ from community_extensions.night_shift_batcher import (  # noqa: E402
     check_dual_regime_slot,
     pack_dual_regime_72h,
     pack_fifo_human_gated_72h,
-    run_benchmark as run_night_shift_benchmark,
     verify_dual_regime_schedule,
+)
+from community_extensions.night_shift_batcher import (  # noqa: E402
+    run_benchmark as run_night_shift_benchmark,
 )
 from community_extensions.rolling_contingency_scheduler import (  # noqa: E402
     FaultSpec,
@@ -28,9 +30,11 @@ from community_extensions.rolling_contingency_scheduler import (  # noqa: E402
     build_nominal_schedule,
     naive_fifo_delay_reschedule,
     rolling_contingency_repair,
-    run_benchmark as run_contingency_benchmark,
     verify_contingency_schedule,
     verify_schedule,
+)
+from community_extensions.rolling_contingency_scheduler import (  # noqa: E402
+    run_benchmark as run_contingency_benchmark,
 )
 
 CJK_RE = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
