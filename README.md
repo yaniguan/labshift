@@ -182,6 +182,10 @@ job_06 |          ...LLLLLLLLLLLLLLL.IIIIIIIIIIIIIIIRRRR............| L[24-39], 
 t(m)   |0           21          42         63          84        105|
 ```
 
+The Gantt chart and the CP-SAT table above are both for `small_00` at makespan 105, but they report different mean flow (70.0 in the chart, 82.2 in the table). CP-SAT minimizes makespan only, so two optimal schedules can have the same makespan and different mean flow. The mean_flow column is therefore not a unique result. These numbers were not re-measured here.
+
+The committed files in `benchmarks/` were generated with `labshift generate --suite-dir benchmarks --seed 1000` (seeds 1000–1009, 1100–1109, 1200–1209). That is also the default seed when `--suite-dir` is set. There is no committed raw bench log behind the tables.
+
 ## How It Works
 
 1. **Models (`labshift.models`)**: Frozen dataclasses define `Operation`, `Job`, `Instance`, `ScheduledOp`, and `Schedule` with JSON round-trip helpers.
@@ -196,5 +200,5 @@ t(m)   |0           21          42         63          84        105|
 - **Run-to-run variation**: CP-SAT with a time limit is not fully deterministic. A second run of the table above gave the same makespan and gap, with mean flow 68.8 instead of 68.9.
 - **Synthetic workloads only**: Durations, capacities, and templates are synthetic integer-minute abstractions and do not model deck layouts, tip racks, or physical transfer setup times.
 - **Hard deadlines in CP-SAT**: `cpsat` treats job deadlines as hard constraints and returns `INFEASIBLE` if no schedule satisfies every deadline, rather than minimizing tardiness softly.
-- **Single makespan objective**: `cpsat` minimizes `makespan` only; alternate optimal solutions with the same makespan can exhibit different `mean_flow_time` values.
+- **Single makespan objective**: `cpsat` minimizes `makespan` only; alternate optimal solutions with the same makespan can exhibit different `mean_flow_time` values. That is why the `small_00` table (82.2) and Gantt chart (70.0) disagree. Do not treat the CP-SAT mean_flow column as a stable result.
 - **Myopic greedy baseline**: `greedy` does not perform lookahead or repair for `max_wait` windows or deadlines; violations are reported explicitly by the checker.
