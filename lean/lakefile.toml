@@ -1,0 +1,6 @@
+name = "labshift-lean"
+version = "0.1.0"
+defaultTargets = ["LabShiftLean"]
+
+[[lean_lib]]
+name = "LabShiftLean"
