@@ -131,6 +131,12 @@ def verify_schedule(
     links: list[WaitWindowLink],
 ) -> str | None:
     """Exact Python mirror of LabShiftLean.checkSchedule. Returns None iff valid."""
+    seen_op_ids: set[int] = set()
+    for op in ops:
+        if op.op_id in seen_op_ids:
+            return "duplicate_op_id"
+        seen_op_ids.add(op.op_id)
+
     for op in ops:
         if not (
             op.dur_min > 0
@@ -148,7 +154,7 @@ def verify_schedule(
 
     for i, a in enumerate(ops):
         for j, b in enumerate(ops):
-            if i == j or a.op_id == b.op_id:
+            if i == j:
                 continue
             if a.pool_id == b.pool_id and a.machine_idx == b.machine_idx:
                 if not (a.end_min <= b.start_min or b.end_min <= a.start_min):

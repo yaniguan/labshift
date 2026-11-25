@@ -129,6 +129,33 @@ def test_verify_schedule_rejects_machine_collision_and_capacity_overflow() -> No
     )
     assert verify_schedule([over_cap], []) == "op_release_deadline_capacity"
 
+    # Issue #31: duplicate op_id collision across distinct overlapping operations is rejected
+    dup_a = ScheduledPlateOp(
+        op_id=1,
+        plate_id=1,
+        step_idx=0,
+        pool_id=0,
+        machine_idx=0,
+        pool_cap=1,
+        start_min=0,
+        dur_min=15,
+        release_min=0,
+        deadline_min=60,
+    )
+    dup_b = ScheduledPlateOp(
+        op_id=1,
+        plate_id=2,
+        step_idx=0,
+        pool_id=0,
+        machine_idx=0,
+        pool_cap=1,
+        start_min=5,
+        dur_min=15,
+        release_min=0,
+        deadline_min=60,
+    )
+    assert verify_schedule([dup_a, dup_b], []) == "duplicate_op_id"
+
 
 def test_rolling_contingency_reroutes_live_plates_and_holds_pre_incubation() -> None:
     pool_caps = {0: 2, 1: 6, 2: 2}
@@ -270,6 +297,14 @@ def test_pure_english_and_lean_file_integrity() -> None:
     lean_src = lean_file.read_text(encoding="utf-8")
     assert "sorry" not in re.findall(r"\bsorry\b", lean_src)
     assert "axiom" not in re.findall(r"\baxiom\b", lean_src)
+    for required_decl in (
+        "hasUniqueOpIds",
+        "duplicate_opId_rejected",
+        "scheduleOK_implies_activeCount_le_poolCap",
+        "sweepLinePoolOK_iff_activeCount_le",
+        "assignPoolLanes_sound",
+    ):
+        assert required_decl in lean_src, f"Missing {required_decl} in LabShiftLean.lean"
 
     checked_paths = [
         lean_file,

@@ -13,6 +13,8 @@ _INST_SYMBOL: dict[str, str] = {
     "centrifuge": "C",
     "washer": "W",
     "robot_arm": "A",
+    "raman_spectrometer": "M",
+    "lc_ms": "S",
 }
 
 
@@ -45,6 +47,10 @@ def render_gantt(
     )
     if "robot_arm" in instance.capacities:
         legend += "  [A] robot_arm"
+    if "raman_spectrometer" in instance.capacities:
+        legend += "  [M] raman_spectrometer"
+    if "lc_ms" in instance.capacities:
+        legend += "  [S] lc_ms"
 
     lines: list[str] = [
         f"Instance: {instance.name} | Solver: {schedule.solver} ({schedule.status})",

@@ -23,7 +23,16 @@ from labshift.generator import (
 )
 from labshift.greedy import solve_greedy, solve_greedy_repair
 from labshift.metrics import Metrics, compute_metrics
-from labshift.models import INSTRUMENTS, Instance, Job, Operation, Schedule, ScheduledOp
+from labshift.models import (
+    BASELINE_INSTRUMENTS,
+    INSTRUMENTS,
+    ORTHOGONAL_INSTRUMENTS,
+    Instance,
+    Job,
+    Operation,
+    Schedule,
+    ScheduledOp,
+)
 from labshift.protocol import (
     export_workcell_queue,
     instance_from_protocols,
@@ -32,13 +41,15 @@ from labshift.protocol import (
 )
 
 if TYPE_CHECKING:
-    from labshift.cpsat import solve_cpsat
+    from labshift.cpsat import compute_horizon_upper_bound, solve_cpsat
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "BASELINE_INSTRUMENTS",
     "DEFAULT_SUITE_PRESETS",
     "INSTRUMENTS",
+    "ORTHOGONAL_INSTRUMENTS",
     "PRESETS",
     "SOLVER_CHOICES",
     "BenchRow",
@@ -53,6 +64,7 @@ __all__ = [
     "Violation",
     "check_schedule",
     "collect_instance_paths",
+    "compute_horizon_upper_bound",
     "compute_metrics",
     "export_workcell_queue",
     "format_benchmark_table",
@@ -71,12 +83,12 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name == "solve_cpsat":
-        from labshift.cpsat import solve_cpsat
+    if name in ("solve_cpsat", "compute_horizon_upper_bound"):
+        import labshift.cpsat as _cpsat
 
-        return solve_cpsat
+        return getattr(_cpsat, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + ["solve_cpsat"])
+    return sorted(list(globals().keys()) + ["solve_cpsat", "compute_horizon_upper_bound"])

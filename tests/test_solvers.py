@@ -377,3 +377,333 @@ def test_cpsat_respects_transfer_time_and_robot_arm() -> None:
         jobs=(inst.jobs[0],),
     )
     assert solve_cpsat(zero_arm, time_limit=1.0).status == "INFEASIBLE"
+
+
+def test_greedy_repair_coupled_slack_deadlock_and_deep_max_wait_chains() -> None:
+    # Issue #28 exact reproducer: intermediate step op_1 absorbs 4 min wait in [0, 10]
+    inst = Instance(
+        name="coupled_slack_deadlock",
+        capacities={"liquid_handler": 1, "incubator": 2, "plate_reader": 1},
+        jobs=(
+            Job(
+                job_id="j_coupled",
+                release=0,
+                deadline=22,
+                ops=(
+                    Operation("prep", "liquid_handler", duration=5),
+                    Operation("incubate", "incubator", duration=5, min_wait=0, max_wait=10),
+                    Operation("read", "plate_reader", duration=5, min_wait=0, max_wait=1),
+                ),
+            ),
+            Job(
+                job_id="j_reader_busy",
+                release=0,
+                deadline=15,
+                ops=(Operation("long_read", "plate_reader", duration=15),),
+            ),
+            Job(
+                job_id="j_lh_busy",
+                release=5,
+                deadline=35,
+                ops=(Operation("bulk_prep", "liquid_handler", duration=30),),
+            ),
+        ),
+    )
+    rep = solve_greedy_repair(inst)
+    assert check_schedule(inst, rep).feasible is True
+
+    # 4-step (3 max_wait links) chain with competing upstream and downstream single-unit stations
+    deep_chain = Instance(
+        name="deep_4step_chain",
+        capacities={"liquid_handler": 1, "incubator": 2, "washer": 2, "plate_reader": 1},
+        jobs=(
+            Job(
+                job_id="j_deep",
+                release=0,
+                deadline=30,
+                ops=(
+                    Operation("prep", "liquid_handler", duration=4),
+                    Operation("incubate", "incubator", duration=5, min_wait=0, max_wait=6),
+                    Operation("wash", "washer", duration=4, min_wait=0, max_wait=6),
+                    Operation("read", "plate_reader", duration=5, min_wait=0, max_wait=1),
+                ),
+            ),
+            Job(
+                job_id="j_reader_hold",
+                release=0,
+                deadline=20,
+                ops=(Operation("cal_read", "plate_reader", duration=20),),
+            ),
+            Job(
+                job_id="j_lh_hold",
+                release=4,
+                deadline=34,
+                ops=(Operation("long_prep", "liquid_handler", duration=30),),
+            ),
+        ),
+    )
+    rep_deep = solve_greedy_repair(deep_chain)
+    assert check_schedule(deep_chain, rep_deep).feasible is True
+
+
+def test_greedy_repair_source_blocking_and_setup_batching() -> None:
+    # Issue #29: source-station blocking on cap-1 centrifuge + asymmetric transit_matrix
+    inst_block = Instance(
+        name="arm_blocking_repair",
+        capacities={"centrifuge": 1, "plate_reader": 1, "robot_arm": 1},
+        transit_matrix={"centrifuge": {"plate_reader": 3}},
+        jobs=(
+            Job(
+                job_id="plate_A",
+                ops=(
+                    Operation("spin", "centrifuge", duration=10),
+                    Operation("read", "plate_reader", duration=4, max_wait=10),
+                ),
+            ),
+            Job(
+                job_id="plate_B",
+                ops=(Operation("spin", "centrifuge", duration=5),),
+            ),
+            Job(
+                job_id="plate_C",
+                ops=(Operation("read_first", "plate_reader", duration=13),),
+            ),
+        ),
+    )
+    rep_block = solve_greedy_repair(inst_block)
+    assert check_schedule(inst_block, rep_block).feasible is True
+
+    # Issue #30: asymmetric decontamination & thermal cooldown (running clean 25C ELISA first saves 7 min)
+    inst_setup = Instance(
+        name="asymmetric_assays",
+        capacities={"washer": 1, "plate_reader": 1},
+        setup_times={
+            "washer": {
+                "bacterial_lysis": {"mammalian_elisa": 10},
+                "mammalian_elisa": {"bacterial_lysis": 2},
+            },
+            "plate_reader": {"37C": {"25C": 12}, "25C": {"37C": 4}},
+        },
+        jobs=(
+            Job(
+                "job_bsl2",
+                release=0,
+                ops=(
+                    Operation("wash", "washer", 8, setup_tag="bacterial_lysis"),
+                    Operation("read_37c", "plate_reader", 5, max_wait=6, setup_tag="37C"),
+                ),
+            ),
+            Job(
+                "job_elisa",
+                release=1,
+                ops=(
+                    Operation("wash", "washer", 7, setup_tag="mammalian_elisa"),
+                    Operation("read_25c", "plate_reader", 5, max_wait=6, setup_tag="25C"),
+                ),
+            ),
+        ),
+    )
+    rep_setup = solve_greedy_repair(inst_setup)
+    assert check_schedule(inst_setup, rep_setup).feasible is True
+    assert compute_metrics(inst_setup, rep_setup).makespan == 23
+
+    # Multi-batch family grouping under tight max_wait windows (2 ELISA + 2 BSL2)
+    inst_families = Instance(
+        name="family_batching",
+        capacities={"washer": 1, "plate_reader": 2},
+        setup_times={
+            "washer": {"bsl2": {"elisa": 12}, "elisa": {"bsl2": 3}},
+        },
+        jobs=(
+            Job(
+                "b1",
+                release=0,
+                deadline=42,
+                assay_tag="bsl2",
+                ops=(
+                    Operation("wash", "washer", 5),
+                    Operation("read", "plate_reader", 4, max_wait=4),
+                ),
+            ),
+            Job(
+                "e1",
+                release=1,
+                deadline=42,
+                assay_tag="elisa",
+                ops=(
+                    Operation("wash", "washer", 5),
+                    Operation("read", "plate_reader", 4, max_wait=4),
+                ),
+            ),
+            Job(
+                "b2",
+                release=2,
+                deadline=42,
+                assay_tag="bsl2",
+                ops=(
+                    Operation("wash", "washer", 5),
+                    Operation("read", "plate_reader", 4, max_wait=4),
+                ),
+            ),
+            Job(
+                "e2",
+                release=2,
+                deadline=42,
+                assay_tag="elisa",
+                ops=(
+                    Operation("wash", "washer", 5),
+                    Operation("read", "plate_reader", 4, max_wait=4),
+                ),
+            ),
+        ),
+    )
+    rep_fam = solve_greedy_repair(inst_families)
+    assert check_schedule(inst_families, rep_fam).feasible is True
+    assert compute_metrics(inst_families, rep_fam).makespan <= 28
+
+
+def test_cpsat_source_blocking_and_sequence_dependent_setup_times() -> None:
+    from labshift.cpsat import solve_cpsat
+
+    # 1. Source-station blocking + transit_matrix + same-pool skip
+    inst_block = Instance(
+        name="cpsat_arm_blocking",
+        capacities={"centrifuge": 1, "plate_reader": 1, "robot_arm": 1},
+        transit_matrix={"centrifuge": {"plate_reader": 3}},
+        jobs=(
+            Job(
+                job_id="plate_A",
+                ops=(
+                    Operation("spin", "centrifuge", duration=10),
+                    Operation("read", "plate_reader", duration=4, max_wait=10),
+                ),
+            ),
+            Job(
+                job_id="plate_B",
+                ops=(Operation("spin", "centrifuge", duration=5),),
+            ),
+            Job(
+                job_id="plate_C",
+                ops=(Operation("read_busy", "plate_reader", duration=13),),
+            ),
+        ),
+    )
+    sched_block = solve_cpsat(inst_block, time_limit=3.0, num_workers=1, seed=0)
+    assert sched_block.status == "OPTIMAL"
+    assert check_schedule(inst_block, sched_block).feasible is True
+
+    # 2. Cap=1 asymmetric setup optimization (optimal makespan = 23)
+    inst_setup1 = Instance(
+        name="cpsat_setup_cap1",
+        capacities={"washer": 1, "plate_reader": 1},
+        setup_times={
+            "washer": {"bsl2": {"elisa": 10}, "elisa": {"bsl2": 2}},
+            "plate_reader": {"37C": {"25C": 12}, "25C": {"37C": 4}},
+        },
+        jobs=(
+            Job(
+                "job_bsl2",
+                release=0,
+                ops=(
+                    Operation("wash", "washer", 8, setup_tag="bsl2"),
+                    Operation("read_37c", "plate_reader", 5, max_wait=6, setup_tag="37C"),
+                ),
+            ),
+            Job(
+                "job_elisa",
+                release=1,
+                ops=(
+                    Operation("wash", "washer", 7, setup_tag="elisa"),
+                    Operation("read_25c", "plate_reader", 5, max_wait=6, setup_tag="25C"),
+                ),
+            ),
+        ),
+    )
+    sched_setup1 = solve_cpsat(inst_setup1, time_limit=3.0, num_workers=1, seed=0)
+    assert sched_setup1.status == "OPTIMAL"
+    assert check_schedule(inst_setup1, sched_setup1).feasible is True
+    assert compute_metrics(inst_setup1, sched_setup1).makespan == 23
+
+    # 3. Cap=2 multi-unit setup optimization (segregates incompatible families onto unit 0 & unit 1)
+    inst_setup2 = Instance(
+        name="cpsat_setup_cap2",
+        capacities={"washer": 2},
+        setup_times={"washer": {"bsl2": {"elisa": 15}, "elisa": {"bsl2": 15}}},
+        jobs=(
+            Job("b1", assay_tag="bsl2", ops=(Operation("wash", "washer", 6),)),
+            Job("b2", assay_tag="bsl2", ops=(Operation("wash", "washer", 6),)),
+            Job("e1", assay_tag="elisa", ops=(Operation("wash", "washer", 6),)),
+            Job("e2", assay_tag="elisa", ops=(Operation("wash", "washer", 6),)),
+        ),
+    )
+    sched_setup2 = solve_cpsat(inst_setup2, time_limit=3.0, num_workers=1, seed=0)
+    assert sched_setup2.status == "OPTIMAL"
+    assert check_schedule(inst_setup2, sched_setup2).feasible is True
+    assert compute_metrics(inst_setup2, sched_setup2).makespan == 12
+
+
+def test_cpsat_overnight_120_jobs_tight_horizon_partial_hints_and_flow_scale() -> None:
+    from labshift.cpsat import (
+        MAX_MONOLITHIC_FLOW_SCALE,
+        compute_horizon_upper_bound,
+        select_valid_hint_job_ids,
+        solve_cpsat,
+    )
+    from labshift.generator import PresetConfig, _sample_from_config
+
+    overnight_cfg = PresetConfig(
+        num_jobs=120,
+        ops_min=4,
+        ops_max=5,
+        release_max=240,
+        capacities={
+            "liquid_handler": 2,
+            "incubator": 5,
+            "plate_reader": 1,
+            "centrifuge": 2,
+            "washer": 2,
+        },
+        max_wait_prob=0.65,
+        max_wait_range=(6, 14),
+        deadline_prob=0.7,
+        deadline_slack_factor=1.6,
+    )
+    inst = _sample_from_config(overnight_cfg, "overnight", 2026, 2026, "overnight_120")
+    assert inst.total_operations > 500
+
+    rep = solve_greedy_repair(inst)
+    rep_chk = check_schedule(inst, rep)
+    assert rep_chk.feasible is False  # misses tight deadlines on a small subset of jobs
+    assert rep_chk.counts_by_kind().get("max_wait", 0) == 0
+
+    # 1. Horizon upper bound is ~1,180 min instead of 12,658 min sequential blowup
+    tight_ub = compute_horizon_upper_bound(inst, hint_sched=rep, hint_check=rep_chk, hard_deadlines=True)
+    assert 1000 <= tight_ub <= 2000
+
+    # 2. Partial warm-start hints retain all >95 non-violating jobs instead of dropping to 0
+    wide_var_bounds = {(j.job_id, idx): (0, tight_ub) for j in inst.jobs for idx in range(len(j.ops))}
+    hinted_ids = select_valid_hint_job_ids(
+        inst, rep, rep_chk, wide_var_bounds, wide_var_bounds, hard_deadlines=True
+    )
+    assert len(hinted_ids) >= 95
+    assert MAX_MONOLITHIC_FLOW_SCALE <= 100_000
+
+    # 3. Soft-deadline + tie_break_flow solve on 120 jobs produces valid low-tardiness schedule
+    cp_soft = solve_cpsat(
+        inst,
+        time_limit=4.0,
+        num_workers=2,
+        seed=0,
+        tie_break_flow=True,
+        hard_deadlines=False,
+    )
+    assert cp_soft.status in ("OPTIMAL", "FEASIBLE")
+    soft_chk = check_schedule(inst, cp_soft)
+    assert soft_chk.counts_by_kind().get("max_wait", 0) == 0
+    assert soft_chk.counts_by_kind().get("capacity", 0) == 0
+    soft_m = compute_metrics(inst, cp_soft, check=soft_chk)
+    rep_m = compute_metrics(inst, rep, check=rep_chk)
+    assert soft_m.makespan is not None and rep_m.makespan is not None
+    assert (soft_m.makespan + 10 * soft_m.total_tardiness) <= (
+        rep_m.makespan + 10 * rep_m.total_tardiness
+    )
