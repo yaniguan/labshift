@@ -10,13 +10,20 @@ from pathlib import Path
 
 from labshift.bench import (
     SOLVER_CHOICES,
+    compute_paired_summary,
     format_benchmark_table,
     run_benchmark,
     solve_instance,
 )
 from labshift.checker import check_schedule
 from labshift.gantt import render_gantt
-from labshift.generator import PRESETS, generate_benchmark_suite, generate_instance
+from labshift.generator import (
+     DEFAULT_SUITE_PRESETS,
+    PLANTED_SUITE_PRESETS,
+    PRESETS,
+    generate_benchmark_suite,
+    generate_instance,
+)
 from labshift.metrics import compute_metrics
 from labshift.models import Instance, Schedule
 
@@ -31,7 +38,7 @@ def _positive_float(raw: str) -> float:
     return val
 
 
-def _min_int(minimum: int) -> Callable[[str], int]:
+def _min_int(minimum: int) -> Callable[ [str], int ]:
     def _validator(raw: str) -> int:
         try:
             val = int(raw)
@@ -44,24 +51,24 @@ def _min_int(minimum: int) -> Callable[[str], int]:
     return _validator
 
 
-def _add_cpsat_options(parser: argparse.ArgumentParser) -> None:
+def _add_solver_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--time-limit",
         type=_positive_float,
         default=5.0,
-        help="Time limit in seconds (> 0) for cpsat (default: 5.0).",
+        help="Time limit in seconds (> 0) for cpsat/lns/pyjobshop (default: 5.0).",
     )
     parser.add_argument(
         "--workers",
         type=_min_int(1),
         default=4,
-        help="Number of CP-SAT search workers (>= 1, default: 4).",
+        help="Number of search workers (>= 1, default: 4).",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Optional random seed for CP-SAT search determinism.",
+        help="Optional random seed for search determinism.",
     )
     parser.add_argument(
         "--tie-break-flow",
@@ -71,7 +78,7 @@ def _add_cpsat_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--soft-deadlines",
         action="store_true",
-        help="Relax hard job deadlines in cpsat and penalize total tardiness instead.",
+        help="Relax hard job deadlines in cpsat/pyjobshop and penalize total tardiness instead.",
     )
 
 
@@ -90,7 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="cpsat",
         help="Solver to run (default: cpsat).",
     )
-    _add_cpsat_options(solve_p)
+    _add_solver_options(solve_p)
     solve_p.add_argument("--out", help="Output file path for solved Schedule JSON.")
 
     bench_p = sub.add_parser("bench", help="Run a solver on a benchmark file or directory.")
@@ -101,7 +108,13 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Solver to evaluate.",
     )
-    _add_cpsat_options(bench_p)
+    bench_p.add_argument(
+        "--compare",
+        choices=SOLVER_CHOICES,
+        default=None,
+        help="Optional second solver to evaluate for paired feasible makespan comparison.",
+    )
+    _add_solver_options(bench_p)
     bench_p.add_argument(
         "--out-dir",
         help="Optional directory to save per-instance Schedule JSON files.",
@@ -120,7 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="cpsat",
         help="Solver to run if --schedule is not given (default: cpsat).",
     )
-    _add_cpsat_options(gantt_p)
+    _add_solver_options(gantt_p)
     gantt_p.add_argument("--schedule", help="Optional precomputed schedule JSON file.")
     gantt_p.add_argument(
         "--save-schedule",
@@ -144,12 +157,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=None,
-        help="RNG seed. Default: 1000 with --suite-dir, else 0.",
+        help="RNG seed. Default: 2100 with --suite-dir --planted, 1000 with --suite-dir, else 0.",
     )
     gen_p.add_argument("--out", help="Output JSON file path for a single instance.")
     gen_p.add_argument(
         "--suite-dir",
-        help="Output directory to write a full small/medium/large benchmark suite.",
+        help="Output directory to write a benchmark suite.",
     )
     gen_p.add_argument(
         "--count",
@@ -161,6 +174,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ensure-feasible",
         action="store_true",
         help="Verify generated instances are feasible (widening tight windows if needed).",
+    )
+    gen_p.add_argument(
+        "--planted",
+        action="store_true",
+        help="Construct a packed feasible schedule first and derive tight windows/deadlines.",
+    )
+    gen_p.add_argument(
+        "--witness-out",
+        help="Optional output Schedule JSON path for the planted witness (single instance).",
+    )
+    gen_p.add_argument(
+        "--witness-dir",
+        help="Optional separate directory to save planted witness Schedule JSON files with --suite-dir.",
     )
 
     chk_p = sub.add_parser("check", help="Validate a schedule JSON against an instance JSON.")
@@ -209,17 +235,30 @@ def main(argv: list[str] | None = None) -> int:
             hard_deadlines=not args.soft_deadlines,
             out_dir=args.out_dir,
         )
-        print(format_benchmark_table(rows))
+        baseline_rows = None
+        if args.compare is not None:
+            baseline_rows = run_benchmark(
+                args.target,
+                solver=args.compare,
+                time_limit=args.time_limit,
+                num_workers=args.workers,
+                seed=args.seed,
+                tie_break_flow=args.tie_break_flow,
+                hard_deadlines=not args.soft_deadlines,
+            )
+        print(format_benchmark_table(rows, baseline_rows=baseline_rows))
         if args.json_out:
             out_path = Path(args.json_out)
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
+            payload: dict[str, object] = {
                 "solver": args.solver,
                 "count": len(rows),
                 "feasible_count": sum(1 for r in rows if r.metrics.feasible),
                 "solved_count": sum(1 for r in rows if r.metrics.makespan is not None),
                 "rows": [r.to_dict() for r in rows],
             }
+            if baseline_rows is not None:
+                payload["paired_comparison"] = compute_paired_summary(rows, baseline_rows)
             out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return 0
 
@@ -244,11 +283,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "generate":
         if args.suite_dir:
+            default_base = 2100 if args.planted else 1000
+            suite_presets = PLANTED_SUITE_PRESETS if args.planted else DEFAULT_SUITE_PRESETS
             written = generate_benchmark_suite(
                 args.suite_dir,
                 count_per_preset=args.count,
-                base_seed=1000 if args.seed is None else args.seed,
+                base_seed=default_base if args.seed is None else args.seed,
+                presets=suite_presets,
                 ensure_feasible=args.ensure_feasible,
+                planted=args.planted,
+                witness_dir=args.witness_dir,
             )
             print(f"Generated {len(written)} instances in {Path(args.suite_dir)}")
             return 0
@@ -256,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
             preset=args.preset,
             seed=0 if args.seed is None else args.seed,
             ensure_feasible=args.ensure_feasible,
+            planted=args.planted,
+            witness_out=args.witness_out,
         )
         if args.out:
             inst.save_json(args.out)

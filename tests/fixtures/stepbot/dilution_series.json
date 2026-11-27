@@ -1,0 +1,27 @@
+{
+  "metadata": {
+    "name": "Two-fold dilution series",
+    "description": "Two-fold serial dilution of dye in buffer across row A"
+  },
+  "steps": [
+    {
+      "comment": "Prepare 2-fold dye dilution series across row A"
+    },
+    {
+      "dilution_series": {
+        "source": "reservoir:A1",
+        "diluent": "reservoir:A2",
+        "first_well": "plate:A1",
+        "n": 8,
+        "factor": 2,
+        "final_volume": 100,
+        "mix_reps": 3
+      }
+    },
+    {
+      "delay": {
+        "seconds": 5
+      }
+    }
+  ]
+}

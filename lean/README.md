@@ -23,6 +23,9 @@
 5. **Day/Night Dual-Regime Queue Partition Gate (Idea #08)**
    - `DualRegimeSlot`, `checkDualRegimeSlot`.
    - `unverified_overnight_run_rejected` & `unsigned_or_late_frontier_rejected`: mirrors `community_extensions/night_shift_batcher.py`.
+6. **Energetic Pool Lower Bound (#36) & Planted Witness Construction (#37)**
+   - `mkPlantedWaitLink` & `plantedWaitLink_ok`: proves witness-derived `max_wait = planted_wait + slack` transitions satisfy `waitLinkOK`.
+   - `twoStepChain_makespan_lb` & `energeticPoolBound_le_makespan`: proves `rMin + ceil(poolWork / cap) + qMin ≤ makespan` over discrete-time occupancy for every `ScheduleOK` schedule (`src/labshift/bounds.py`).
 
 ## Verification
 

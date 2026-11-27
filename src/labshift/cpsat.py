@@ -12,6 +12,7 @@ try:
 except ImportError as exc:
     raise ImportError("Install ortools>=9.8 to use the 'cpsat' solver.") from exc
 
+from labshift.bounds import makespan_lower_bound
 from labshift.checker import CheckResult, check_schedule
 from labshift.greedy import (
     _has_infeasible_capacity,
@@ -626,8 +627,14 @@ def solve_cpsat(
                 model.add_no_overlap(u_ivs)
                 model.add_circuit(u_arcs)
 
-    makespan = model.new_int_var(0, horizon, "makespan")
+    lb = makespan_lower_bound(instance)
+    if not hard_deadlines:
+        horizon = max(horizon, lb)
+
+    makespan = model.new_int_var(0, max(horizon, lb), "makespan")
     model.add_max_equality(makespan, job_ends)
+    model.add(makespan <= horizon)
+    model.add(makespan >= lb)
 
     primary_obj: cp_model.LinearExpr | cp_model.IntVar
     if not hard_deadlines and tard_vars:

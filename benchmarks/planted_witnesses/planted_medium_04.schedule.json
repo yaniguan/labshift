@@ -1,0 +1,425 @@
+{
+  "instance_name": "planted_medium_04",
+  "solver": "planted_witness",
+  "status": "OK",
+  "solve_time_s": 0.0,
+  "best_bound": null,
+  "ops": [
+    {
+      "job_id": "job_01",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 0,
+      "end": 12
+    },
+    {
+      "job_id": "job_01",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 14,
+      "end": 22
+    },
+    {
+      "job_id": "job_01",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 23,
+      "end": 34
+    },
+    {
+      "job_id": "job_01",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 37,
+      "end": 45
+    },
+    {
+      "job_id": "job_02",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 78,
+      "end": 84
+    },
+    {
+      "job_id": "job_02",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 85,
+      "end": 92
+    },
+    {
+      "job_id": "job_02",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 100,
+      "end": 112
+    },
+    {
+      "job_id": "job_02",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 144,
+      "end": 153
+    },
+    {
+      "job_id": "job_03",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 6,
+      "end": 11
+    },
+    {
+      "job_id": "job_03",
+      "op_index": 1,
+      "name": "dilution_series",
+      "instrument": "liquid_handler",
+      "start": 63,
+      "end": 78
+    },
+    {
+      "job_id": "job_03",
+      "op_index": 2,
+      "name": "equilibrate",
+      "instrument": "incubator",
+      "start": 82,
+      "end": 95
+    },
+    {
+      "job_id": "job_03",
+      "op_index": 3,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 96,
+      "end": 106
+    },
+    {
+      "job_id": "job_03",
+      "op_index": 4,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 133,
+      "end": 140
+    },
+    {
+      "job_id": "job_04",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 57,
+      "end": 63
+    },
+    {
+      "job_id": "job_04",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 64,
+      "end": 78
+    },
+    {
+      "job_id": "job_04",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 90,
+      "end": 100
+    },
+    {
+      "job_id": "job_04",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 128,
+      "end": 133
+    },
+    {
+      "job_id": "job_05",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 20,
+      "end": 25
+    },
+    {
+      "job_id": "job_05",
+      "op_index": 1,
+      "name": "dilution_series",
+      "instrument": "liquid_handler",
+      "start": 56,
+      "end": 68
+    },
+    {
+      "job_id": "job_05",
+      "op_index": 2,
+      "name": "equilibrate",
+      "instrument": "incubator",
+      "start": 79,
+      "end": 96
+    },
+    {
+      "job_id": "job_05",
+      "op_index": 3,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 96,
+      "end": 103
+    },
+    {
+      "job_id": "job_05",
+      "op_index": 4,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 119,
+      "end": 128
+    },
+    {
+      "job_id": "job_06",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 31,
+      "end": 43
+    },
+    {
+      "job_id": "job_06",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 43,
+      "end": 51
+    },
+    {
+      "job_id": "job_06",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 54,
+      "end": 66
+    },
+    {
+      "job_id": "job_06",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 66,
+      "end": 71
+    },
+    {
+      "job_id": "job_07",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 11,
+      "end": 18
+    },
+    {
+      "job_id": "job_07",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 21,
+      "end": 31
+    },
+    {
+      "job_id": "job_07",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 34,
+      "end": 41
+    },
+    {
+      "job_id": "job_07",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 51,
+      "end": 58
+    },
+    {
+      "job_id": "job_08",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 68,
+      "end": 80
+    },
+    {
+      "job_id": "job_08",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 82,
+      "end": 95
+    },
+    {
+      "job_id": "job_08",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 96,
+      "end": 105
+    },
+    {
+      "job_id": "job_08",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 140,
+      "end": 144
+    },
+    {
+      "job_id": "job_09",
+      "op_index": 0,
+      "name": "dilution_series",
+      "instrument": "liquid_handler",
+      "start": 27,
+      "end": 43
+    },
+    {
+      "job_id": "job_09",
+      "op_index": 1,
+      "name": "dye_dispense",
+      "instrument": "liquid_handler",
+      "start": 43,
+      "end": 47
+    },
+    {
+      "job_id": "job_09",
+      "op_index": 2,
+      "name": "incubate",
+      "instrument": "incubator",
+      "start": 49,
+      "end": 79
+    },
+    {
+      "job_id": "job_09",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 80,
+      "end": 86
+    },
+    {
+      "job_id": "job_10",
+      "op_index": 0,
+      "name": "buffer_add",
+      "instrument": "liquid_handler",
+      "start": 14,
+      "end": 25
+    },
+    {
+      "job_id": "job_10",
+      "op_index": 1,
+      "name": "spin_down",
+      "instrument": "centrifuge",
+      "start": 25,
+      "end": 36
+    },
+    {
+      "job_id": "job_10",
+      "op_index": 2,
+      "name": "plate_wash",
+      "instrument": "washer",
+      "start": 36,
+      "end": 43
+    },
+    {
+      "job_id": "job_10",
+      "op_index": 3,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 45,
+      "end": 51
+    },
+    {
+      "job_id": "job_11",
+      "op_index": 0,
+      "name": "plate_prep",
+      "instrument": "liquid_handler",
+      "start": 47,
+      "end": 56
+    },
+    {
+      "job_id": "job_11",
+      "op_index": 1,
+      "name": "incubate",
+      "instrument": "incubator",
+      "start": 59,
+      "end": 82
+    },
+    {
+      "job_id": "job_11",
+      "op_index": 2,
+      "name": "mix_wash",
+      "instrument": "washer",
+      "start": 82,
+      "end": 90
+    },
+    {
+      "job_id": "job_11",
+      "op_index": 3,
+      "name": "dye_dispense",
+      "instrument": "liquid_handler",
+      "start": 91,
+      "end": 100
+    },
+    {
+      "job_id": "job_11",
+      "op_index": 4,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 110,
+      "end": 119
+    },
+    {
+      "job_id": "job_12",
+      "op_index": 0,
+      "name": "plate_prep",
+      "instrument": "liquid_handler",
+      "start": 43,
+      "end": 57
+    },
+    {
+      "job_id": "job_12",
+      "op_index": 1,
+      "name": "incubate",
+      "instrument": "incubator",
+      "start": 58,
+      "end": 86
+    },
+    {
+      "job_id": "job_12",
+      "op_index": 2,
+      "name": "mix_wash",
+      "instrument": "washer",
+      "start": 86,
+      "end": 96
+    },
+    {
+      "job_id": "job_12",
+      "op_index": 3,
+      "name": "dye_dispense",
+      "instrument": "liquid_handler",
+      "start": 98,
+      "end": 103
+    },
+    {
+      "job_id": "job_12",
+      "op_index": 4,
+      "name": "plate_read",
+      "instrument": "plate_reader",
+      "start": 106,
+      "end": 110
+    }
+  ]
+}
