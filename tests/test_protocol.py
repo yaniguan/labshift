@@ -113,3 +113,61 @@ def test_cpsat_solves_multi_protocol_instance() -> None:
     sched = solve_cpsat(inst, time_limit=5.0, num_workers=1, seed=0, tie_break_flow=True)
     assert sched.status == "OPTIMAL"
     assert check_schedule(inst, sched).feasible
+
+
+def test_orthogonal_protocol_steps_transit_matrix_and_same_pool_queue() -> None:
+    from labshift.models import Instance, Job, Operation, Schedule, ScheduledOp
+
+    ortho_proto = {
+        "protocol_id": "ortho_confirm",
+        "assay_tag": "catalysis_screen",
+        "steps": [
+            {"type": "transfer", "volume": 50, "unit": "uL"},
+            {"type": "raman", "duration": 6, "time_unit": "min"},
+            {"type": "lc_ms", "duration": 8, "time_unit": "min"},
+        ],
+    }
+    transit = {
+        "liquid_handler": {"raman_spectrometer": 1},
+        "raman_spectrometer": {"lc_ms": 3},
+    }
+    inst = instance_from_protocols([ortho_proto], name="ortho_batch", transit_matrix=transit)
+    assert "raman_spectrometer" in inst.capacities
+    assert "lc_ms" in inst.capacities
+    assert "robot_arm" in inst.capacities
+    job = inst.jobs[0]
+    assert [op.instrument for op in job.ops] == [
+        "liquid_handler",
+        "raman_spectrometer",
+        "lc_ms",
+    ]
+    assert job.ops[1].transfer_time == 1
+    assert job.ops[2].transfer_time == 3
+
+    sched = solve_greedy_repair(inst)
+    assert check_schedule(inst, sched).feasible is True
+
+    # Same-instrument operations with transfer_time > 0 must not emit robot_arm transfer events
+    same_inst = Instance(
+        name="same_inst_queue",
+        capacities={"liquid_handler": 1, "robot_arm": 1},
+        jobs=(
+            Job(
+                "j1",
+                ops=(
+                    Operation("prep", "liquid_handler", 4),
+                    Operation("mix", "liquid_handler", 3, transfer_time=2),
+                ),
+            ),
+        ),
+    )
+    same_sched = Schedule(
+        "same_inst_queue",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "liquid_handler", 0, 4, "prep"),
+            ScheduledOp("j1", 1, "liquid_handler", 6, 9, "mix"),
+        ),
+    )
+    queue = export_workcell_queue(same_sched, same_inst)
+    assert [ev["event"] for ev in queue] == ["execute", "execute"]

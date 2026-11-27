@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from labshift.models import INSTRUMENTS, Instance, Job, Operation, Schedule
+from labshift.models import BASELINE_INSTRUMENTS, Instance, Job, Operation, Schedule
 
 ProtocolInput = Sequence[Mapping[str, Any] | Any] | Mapping[str, Any] | Any | str | Path
 
@@ -19,6 +19,8 @@ _WASHER_TYPES = frozenset({"wash", "plate_wash"})
 _INCUBATOR_TYPES = frozenset({"incubate", "thermocycle", "equilibrate"})
 _CENTRIFUGE_TYPES = frozenset({"spin", "centrifuge", "spin_down"})
 _READER_TYPES = frozenset({"read", "measure", "plate_read"})
+_RAMAN_TYPES = frozenset({"raman", "raman_read", "raman_spectroscopy", "raman_scan"})
+_LCMS_TYPES = frozenset({"lc_ms", "lcms", "lc-ms", "mass_spec", "lc_ms_read"})
 
 
 def _step_to_dict(step: Any) -> dict[str, Any]:
@@ -140,6 +142,14 @@ def _classify_step(step: Mapping[str, Any]) -> tuple[str, str, float]:
         secs = _time_seconds(step, default_min=2.0)
         return step_type, "plate_reader", secs
 
+    if step_type in _RAMAN_TYPES:
+        secs = _time_seconds(step, default_min=5.0)
+        return step_type, "raman_spectrometer", secs
+
+    if step_type in _LCMS_TYPES:
+        secs = _time_seconds(step, default_min=8.0)
+        return step_type, "lc_ms", secs
+
     raise ValueError(f"Unsupported protocol step type '{step_type}'.")
 
 
@@ -152,13 +162,16 @@ def job_from_protocol(
     post_incubate_max_wait: int | None = 15,
     post_wash_max_wait: int | None = 10,
     transfer_time: int = 0,
+    transit_matrix: Mapping[str, Mapping[str, int]] | None = None,
+    assay_tag: str | None = None,
 ) -> Job:
     """Convert a twinstep / stepbot protocol into a scheduled labshift Job.
 
     Groups contiguous liquid-handling steps (transfer/mix/dispense) onto
     ``liquid_handler``, wash steps onto ``washer``, incubation steps onto
-    ``incubator``, spin steps onto ``centrifuge``, and read steps onto
-    ``plate_reader``, estimating integer-minute durations (>= 1 min).
+    ``incubator``, spin steps onto ``centrifuge``, read steps onto
+    ``plate_reader``, and orthogonal assays onto ``raman_spectrometer`` / ``lc_ms``,
+    estimating integer-minute durations (>= 1 min).
     """
     if post_incubate_max_wait is not None and (
         isinstance(post_incubate_max_wait, bool)
@@ -180,20 +193,27 @@ def job_from_protocol(
         raise ValueError("Protocol must contain at least one step.")
 
     resolved_job_id = job_id if job_id is not None else proto_id
+    resolved_assay_tag = assay_tag
+    if resolved_assay_tag is None and isinstance(protocol, Mapping):
+        raw_assay = protocol.get("assay_tag", protocol.get("assay_class"))
+        if isinstance(raw_assay, str) and raw_assay.strip():
+            resolved_assay_tag = raw_assay
 
-    groups: list[tuple[str, list[str], float]] = []
+    groups: list[tuple[str, list[str], float, str | None]] = []
     for step in steps:
         s_type, inst, secs = _classify_step(step)
-        if groups and groups[-1][0] == inst:
-            prev_inst_g, prev_types, prev_secs = groups[-1]
+        raw_step_tag = step.get("setup_tag", step.get("assay_tag", step.get("assay_class")))
+        step_tag = str(raw_step_tag) if isinstance(raw_step_tag, str) and raw_step_tag.strip() else None
+        if groups and groups[-1][0] == inst and groups[-1][3] == step_tag:
+            prev_inst_g, prev_types, prev_secs, prev_tag = groups[-1]
             if s_type not in prev_types:
                 prev_types.append(s_type)
-            groups[-1] = (prev_inst_g, prev_types, prev_secs + secs)
+            groups[-1] = (prev_inst_g, prev_types, prev_secs + secs, prev_tag)
         else:
-            groups.append((inst, [s_type], secs))
+            groups.append((inst, [s_type], secs, step_tag))
 
     ops: list[Operation] = []
-    for idx, (inst, step_types, total_secs) in enumerate(groups):
+    for idx, (inst, step_types, total_secs, step_tag) in enumerate(groups):
         op_name = "_".join(step_types[:3])
         duration = max(1, math.ceil(total_secs / 60.0))
         min_wait = 0
@@ -202,8 +222,13 @@ def job_from_protocol(
 
         if idx > 0:
             prev_inst = groups[idx - 1][0]
-            if inst != prev_inst and transfer_time > 0:
-                op_transfer = transfer_time
+            if inst != prev_inst:
+                matrix_t = (
+                    int(transit_matrix.get(prev_inst, {}).get(inst, 0))
+                    if transit_matrix is not None
+                    else 0
+                )
+                op_transfer = max(transfer_time, matrix_t)
             base_gap = max(min_wait, op_transfer)
             if prev_inst in ("incubator", "centrifuge") and post_incubate_max_wait is not None:
                 max_wait = base_gap + post_incubate_max_wait
@@ -218,6 +243,7 @@ def job_from_protocol(
                 min_wait=min_wait,
                 max_wait=max_wait,
                 transfer_time=op_transfer,
+                setup_tag=step_tag,
             )
         )
 
@@ -226,6 +252,7 @@ def job_from_protocol(
         ops=tuple(ops),
         release=release,
         deadline=deadline,
+        assay_tag=resolved_assay_tag,
     )
 
 
@@ -239,6 +266,8 @@ def instance_from_protocols(
     post_incubate_max_wait: int | None = 15,
     post_wash_max_wait: int | None = 10,
     transfer_time: int = 0,
+    transit_matrix: Mapping[str, Mapping[str, int]] | None = None,
+    setup_times: Mapping[str, Mapping[str, Mapping[str, int]]] | None = None,
 ) -> Instance:
     """Build a multi-job labshift Instance from a collection of protocols."""
     if not protocols:
@@ -247,6 +276,23 @@ def instance_from_protocols(
         raise ValueError("Length of 'releases' must match length of 'protocols'.")
     if deadlines is not None and len(deadlines) != len(protocols):
         raise ValueError("Length of 'deadlines' must match length of 'protocols'.")
+
+    clean_transit: dict[str, dict[str, int]] | None = (
+        {str(src): {str(dst): int(val) for dst, val in row.items()} for src, row in transit_matrix.items()}
+        if transit_matrix is not None
+        else None
+    )
+    clean_setup: dict[str, dict[str, dict[str, int]]] | None = (
+        {
+            str(inst): {
+                str(f_tag): {str(t_tag): int(val) for t_tag, val in row.items()}
+                for f_tag, row in f_map.items()
+            }
+            for inst, f_map in setup_times.items()
+        }
+        if setup_times is not None
+        else None
+    )
 
     jobs: list[Job] = []
     used_ids: set[str] = set()
@@ -271,20 +317,29 @@ def instance_from_protocols(
                 post_incubate_max_wait=post_incubate_max_wait,
                 post_wash_max_wait=post_wash_max_wait,
                 transfer_time=transfer_time,
+                transit_matrix=clean_transit,
             )
         )
 
     if capacities is not None:
         caps = dict(capacities)
     else:
-        caps = {inst: (2 if inst == "incubator" else 1) for inst in INSTRUMENTS}
-        if transfer_time > 0:
+        caps = {inst: (2 if inst == "incubator" else 1) for inst in BASELINE_INSTRUMENTS}
+        for job in jobs:
+            for op in job.ops:
+                caps.setdefault(op.instrument, 1)
+        has_matrix_transfer = clean_transit is not None and any(
+            val > 0 for row in clean_transit.values() for val in row.values()
+        )
+        if transfer_time > 0 or has_matrix_transfer:
             caps["robot_arm"] = 1
 
     return Instance(
         name=name,
         capacities=caps,
         jobs=tuple(jobs),
+        transit_matrix=clean_transit,
+        setup_times=clean_setup,
     )
 
 
@@ -300,27 +355,29 @@ def export_workcell_queue(
 
     for sop in schedule.ops:
         job = job_lookup.get(sop.job_id)
-        if job is not None and 0 < sop.op_index < len(job.ops):
+        if job is not None and instance is not None and 0 < sop.op_index < len(job.ops):
             spec = job.ops[sop.op_index]
             prev_sop = by_key.get((sop.job_id, sop.op_index - 1))
-            if spec.transfer_time > 0 and prev_sop is not None:
-                t_start = sop.start - spec.transfer_time
-                t_end = sop.start
-                transfer_event: dict[str, Any] = {
-                    "event": "transfer",
-                    "job_id": sop.job_id,
-                    "op_index": sop.op_index,
-                    "operation": f"transfer_to_{sop.name or sop.instrument}",
-                    "instrument": "robot_arm",
-                    "from_instrument": prev_sop.instrument,
-                    "to_instrument": sop.instrument,
-                    "start": t_start,
-                    "end": t_end,
-                    "duration": spec.transfer_time,
-                }
-                events.append(
-                    ((t_start, 0, t_end, sop.job_id, sop.op_index), transfer_event)
-                )
+            if prev_sop is not None and sop.instrument != prev_sop.instrument:
+                eff_transfer = instance.effective_transfer_time(prev_sop.instrument, spec)
+                if eff_transfer > 0:
+                    t_start = sop.start - eff_transfer
+                    t_end = sop.start
+                    transfer_event: dict[str, Any] = {
+                        "event": "transfer",
+                        "job_id": sop.job_id,
+                        "op_index": sop.op_index,
+                        "operation": f"transfer_to_{sop.name or sop.instrument}",
+                        "instrument": "robot_arm",
+                        "from_instrument": prev_sop.instrument,
+                        "to_instrument": sop.instrument,
+                        "start": t_start,
+                        "end": t_end,
+                        "duration": eff_transfer,
+                    }
+                    events.append(
+                        ((t_start, 0, t_end, sop.job_id, sop.op_index), transfer_event)
+                    )
 
         exec_event: dict[str, Any] = {
             "event": "execute",

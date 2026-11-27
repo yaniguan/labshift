@@ -62,6 +62,57 @@ def test_instance_and_schedule_json_roundtrip(tmp_path: Path) -> None:
     loaded_sched = Schedule.load_json(sched_path)
     assert loaded_sched == sched
 
+    # Optional transit_matrix, setup_times, assay_tag, setup_tag, unit_index, and blocking_handoff round-trip
+    rich_inst = Instance(
+        name="rich_workcell",
+        capacities={"washer": 2, "plate_reader": 1, "robot_arm": 1},
+        transit_matrix={"washer": {"plate_reader": 2}},
+        setup_times={"washer": {"bsl2": {"elisa": 10}, "elisa": {"bsl2": 2}}},
+        blocking_handoff=False,
+        jobs=(
+            Job(
+                job_id="j_bsl2",
+                assay_tag="bsl2",
+                ops=(
+                    Operation("wash", "washer", duration=6),
+                    Operation("read", "plate_reader", duration=4, max_wait=5, setup_tag="37C"),
+                ),
+            ),
+        ),
+    )
+    assert rich_inst.setup_matrix == rich_inst.setup_times
+    assert rich_inst.jobs[0].ops[1].assay_tag == "37C"
+    assert rich_inst.effective_setup_tag(rich_inst.jobs[0], rich_inst.jobs[0].ops[0]) == "bsl2"
+    assert rich_inst.effective_setup_tag(rich_inst.jobs[0], rich_inst.jobs[0].ops[1]) == "37C"
+    assert rich_inst.effective_transfer_time("washer", rich_inst.jobs[0].ops[1]) == 2
+    rich_path = tmp_path / "rich_inst.json"
+    rich_inst.save_json(rich_path)
+    assert Instance.load_json(rich_path) == rich_inst
+
+    unit_sched = Schedule(
+        instance_name="rich_workcell",
+        solver="manual",
+        ops=(ScheduledOp("j_bsl2", 0, "washer", 0, 6, "wash", unit_index=1),),
+    )
+    assert Schedule.from_dict(unit_sched.to_dict()) == unit_sched
+
+    with pytest.raises(ValueError, match="Conflicting"):
+        Operation("wash", "washer", duration=5, setup_tag="A", assay_tag="B")
+    with pytest.raises(ValueError, match="setup_times"):
+        Instance(
+            "bad_setup",
+            capacities={"washer": 1},
+            setup_times={"washer": {"a": {"b": -1}}},
+            jobs=(Job("j1", ops=(Operation("wash", "washer", 5),)),),
+        )
+    with pytest.raises(ValueError, match="transit_matrix"):
+        Instance(
+            "bad_transit",
+            capacities={"washer": 1},
+            transit_matrix={"washer": {"washer": -2}},
+            jobs=(Job("j1", ops=(Operation("wash", "washer", 5),)),),
+        )
+
 
 def test_domain_validation_operation_job_instance_and_schedule() -> None:
     # Operation validation: durations >= 1, non-negative waits, max_wait >= max(min_wait, transfer_time), no bools

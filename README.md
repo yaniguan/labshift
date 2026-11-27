@@ -49,7 +49,10 @@ Full code-level architecture, CP-SAT formulation, benchmark analysis, and engine
 
 ```text
 labshift/
+├── autolab_wire.py              # autolab-wire/v1 Layer L5 scheduling & verification node
 ├── benchmarks/                  # 30 seeded v1 JSON instances (small_00..09, medium_00..09, large_00..09)
+├── community_extensions/        # Rolling breakdown repair (Idea #07) & night-shift packer (Idea #08)
+├── lean/                        # Lean 4 formal window, contingency & dual-regime theorems
 ├── src/labshift/
 │   ├── __init__.py              # Public API exports with PEP 562 lazy solve_cpsat loading
 │   ├── models.py                # Frozen validated dataclasses & JSON serialization
@@ -64,7 +67,7 @@ labshift/
 │   └── cli.py                   # `labshift solve | bench | gantt | generate | check` CLI
 ├── docs/
 │   └── ARCHITECTURE_AND_HISTORY.md
-└── tests/                       # Checker, model, solver, CLI/Gantt, and protocol tests
+└── tests/                       # Checker, model, solver, CLI/Gantt, protocol, extension & wire tests
 ```
 
 ## Quickstart
@@ -201,13 +204,21 @@ t(m)   |0           21          42         63          84        105|
 
 ## How It Works
 
-1. **Models (`labshift.models`)**: Frozen validated dataclasses define `Operation` (with optional `transfer_time`), `Job`, `Instance`, `ScheduledOp`, and `Schedule` with JSON round-trip helpers.
-2. **Generator & Protocol Adapters (`labshift.generator`, `labshift.protocol`)**: `generator.py` samples seeded liquid-handling workflows across `small`, `medium`, `large`, and `hard` presets (with optional `ensure_feasible=True`). `protocol.py` converts concrete `twinstep` / `stepbot` protocol step sequences into `Job` / `Instance` objects and exports scheduled timelines to workcell execution queues.
-3. **Checker (`labshift.checker`)**: Independently verifies `instance_name` match, completeness, `unknown_instrument` / `wrong_instrument` routing, `negative_start`, `duration`, `release`, `precedence`, `min_wait` / `max_wait` / `transfer_time` windows, `deadline`, and departure-first sweep-line `capacity` across instruments and `robot_arm`.
+1. **Models (`labshift.models`)**: Frozen validated dataclasses define `Operation` (with optional `transfer_time` and `setup_tag` / `assay_tag`), `Job`, `Instance` (with optional `transit_matrix`, sequence-dependent `setup_times`, and `blocking_handoff`), `ScheduledOp` (with optional `unit_index`), and `Schedule` with JSON round-trip helpers.
+2. **Generator & Protocol Adapters (`labshift.generator`, `labshift.protocol`)**: `generator.py` samples seeded liquid-handling workflows across `small`, `medium`, `large`, and `hard` presets (with optional `ensure_feasible=True`). `protocol.py` converts concrete `twinstep` / `stepbot` protocol step sequences (including orthogonal `raman` and `lc_ms` confirmation modalities) into `Job` / `Instance` objects and exports scheduled timelines to workcell execution queues.
+3. **Checker (`labshift.checker`)**: Independently verifies `instance_name` match, completeness, `unknown_instrument` / `wrong_instrument` routing, `negative_start`, `duration`, `release`, `precedence`, `min_wait` / `max_wait` / `transfer_time` windows, `deadline`, sequence-dependent `setup_time` changeovers, source-station blocking until `robot_arm` pickup, and departure-first sweep-line `capacity` across instruments and `robot_arm`.
 4. **Solvers (`labshift.greedy`, `labshift.cpsat`)**:
-   - `greedy` dispatches ready operations in `(ready_time, deadline, duration, job_id)` order via an `O(K log K)` event-profile sweep.
-   - `greedy_repair` schedules contiguous `max_wait`-coupled operation segments atomically via right-shift propagation across deterministic priority rules (`30/30` feasible on `benchmarks/`).
-   - `cpsat` tightens `IntervalVar` domains via forward/backward chain propagation, warm-starts from `greedy` / `greedy_repair`, enforces `no_overlap` or `cumulative` across stations and `robot_arm`, and supports pure makespan, lexicographic `--tie-break-flow`, and `--soft-deadlines` tardiness optimization.
+   - `greedy` dispatches ready operations in `(ready_time, deadline, duration, job_id)` order via a cached event-profile sweep and per-unit setup tracker.
+   - `greedy_repair` schedules contiguous `max_wait`-coupled and blocking-arm segments via recursive intra-chain right-shift propagation and setup-aware batching across deterministic priority rules (`30/30` feasible on `benchmarks/`).
+   - `cpsat` tightens `IntervalVar` domains via `compute_horizon_upper_bound` and forward/backward chain propagation, injects full or partial per-job warm-start hints from `greedy` / `greedy_repair`, encodes sequence-dependent changeovers via `add_circuit`, enforces `no_overlap` or `cumulative` across stations and `robot_arm`, and supports pure makespan, capped/two-stage lexicographic `--tie-break-flow`, and `--soft-deadlines` tardiness optimization.
+
+## 15-Repository Auto-Lab Wire Contract (`autolab-wire/v1`)
+
+`autolab_wire.py` (`REPO_ID = "labshift"`, `LAYER = "L5"`) exposes `process_packet(packet: dict) -> dict` for the 15-repository **[`auto-lab`](https://github.com/yaniguan/auto-lab)** autonomous experimentation pipeline:
+
+- **Upstream (`L5` / `L6` / `L2`)**: Accepts packets grounded by [`lab-automation-atlas`](https://github.com/yaniguan/lab-automation-atlas) and triaged by [`buy-or-make`](https://github.com/yaniguan/buy-or-make), consuming `parsed_spans.duration_min` from [`lab-ears`](https://github.com/yaniguan/lab-ears) following [`lab-ask-why`](https://github.com/yaniguan/lab-ask-why) and [`lab-decide`](https://github.com/yaniguan/lab-decide), as well as mid-campaign `RUN_ORTHOGONAL_ASSAY` (`Raman` / `LC-MS`) directives from [`lab-attrib`](https://github.com/yaniguan/lab-attrib). Halted packets pass through unchanged.
+- **L5 Scheduling, Rolling-Horizon Insertion & Independent Verification**: Constructs a contended `Instance` (freezing in-flight operations `start < current_time_min`, applying pre-incubation holds to unstarted background plates, and inserting urgent orthogonal assays within perishability windows), solves deterministically via `solve_cpsat` (with automatic stdlib fallback), and audits the schedule with `check_schedule` and `compute_metrics`. Infeasible schedules halt with granular telemetry (`L5_SCHEDULE_WINDOW_BLOCK`, `L5_SCHEDULE_DEADLINE_BLOCK`, or `L5_SCHEDULE_CAPACITY_BLOCK`), writing `out["schedule"] = {"feasible", "makespan_min", "window_violations", "operations"}` and recording Lean invariant `missed_incubation_window_rejected` (`lean/LabShiftLean.lean`).
+- **Downstream (`L4` -> `L1`/`L0` -> `L4`/`L3`)**: Forwards verified `out["schedule"]` packets to [`lab-rehearsal`](https://github.com/yaniguan/lab-rehearsal), continuing across [`lab-verify`](https://github.com/yaniguan/lab-verify), [`stepbot`](https://github.com/yaniguan/stepbot), [`lab-hands`](https://github.com/yaniguan/lab-hands), [`lab-feet`](https://github.com/yaniguan/lab-feet), post-execution causal blame & SHA-256 certified ledger [`lab-attrib`](https://github.com/yaniguan/lab-attrib), [`twinstep`](https://github.com/yaniguan/twinstep), [`labfill`](https://github.com/yaniguan/labfill), and [`labbench-posttrain`](https://github.com/yaniguan/labbench-posttrain).
 
 ## Limits
 

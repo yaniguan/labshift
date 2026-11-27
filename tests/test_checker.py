@@ -313,3 +313,177 @@ def test_transfer_time_and_robot_arm_capacity() -> None:
         ),
     )
     assert check_schedule(inst, staggered).feasible
+
+
+def test_source_station_blocking_same_pool_skip_and_transit_matrix() -> None:
+    # Issue #29: plate_A sits in capacity-1 centrifuge over [10, 13) awaiting arm pickup at t=13
+    inst_block = Instance(
+        name="arm_blocking_bug",
+        capacities={"centrifuge": 1, "plate_reader": 2, "robot_arm": 1},
+        jobs=(
+            Job(
+                job_id="plate_A",
+                ops=(
+                    Operation("spin", "centrifuge", duration=10),
+                    Operation("read", "plate_reader", duration=4, transfer_time=3, max_wait=10),
+                ),
+            ),
+            Job(
+                job_id="plate_B",
+                ops=(Operation("spin", "centrifuge", duration=5),),
+            ),
+        ),
+    )
+    overlap_before_pickup = Schedule(
+        instance_name="arm_blocking_bug",
+        solver="manual",
+        ops=(
+            ScheduledOp("plate_A", 0, "centrifuge", 0, 10, "spin"),
+            ScheduledOp("plate_A", 1, "plate_reader", 16, 20, "read"),
+            ScheduledOp("plate_B", 0, "centrifuge", 10, 15, "spin"),
+        ),
+    )
+    res_block = check_schedule(inst_block, overlap_before_pickup)
+    assert res_block.feasible is False
+    assert res_block.counts_by_kind() == {"capacity": 1}
+    assert res_block.violations[0].instrument == "centrifuge"
+
+    # Once plate_B starts at t=13 (right when robot_arm picks up plate_A), handoff is valid!
+    valid_after_pickup = Schedule(
+        instance_name="arm_blocking_bug",
+        solver="manual",
+        ops=(
+            ScheduledOp("plate_A", 0, "centrifuge", 0, 10, "spin"),
+            ScheduledOp("plate_A", 1, "plate_reader", 16, 20, "read"),
+            ScheduledOp("plate_B", 0, "centrifuge", 13, 18, "spin"),
+        ),
+    )
+    assert check_schedule(inst_block, valid_after_pickup).feasible is True
+
+    # Same-instrument consecutive operations do NOT reserve robot_arm capacity
+    same_pool = Instance(
+        name="same_lh",
+        capacities={"liquid_handler": 2, "robot_arm": 1},
+        jobs=(
+            Job(
+                "j1",
+                ops=(
+                    Operation("dilute", "liquid_handler", 5),
+                    Operation("dispense", "liquid_handler", 4, transfer_time=2),
+                ),
+            ),
+            Job(
+                "j2",
+                ops=(
+                    Operation("dilute", "liquid_handler", 5),
+                    Operation("dispense", "liquid_handler", 4, transfer_time=2),
+                ),
+            ),
+        ),
+    )
+    same_pool_sched = Schedule(
+        "same_lh",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "liquid_handler", 0, 5, "dilute"),
+            ScheduledOp("j1", 1, "liquid_handler", 7, 11, "dispense"),
+            ScheduledOp("j2", 0, "liquid_handler", 0, 5, "dilute"),
+            ScheduledOp("j2", 1, "liquid_handler", 7, 11, "dispense"),
+        ),
+    )
+    assert check_schedule(same_pool, same_pool_sched).feasible is True
+
+    # Asymmetric transit_matrix enforces pool-pair transit time without per-op transfer_time
+    inst_matrix = Instance(
+        name="matrix_cell",
+        capacities={"centrifuge": 1, "plate_reader": 1, "robot_arm": 1},
+        transit_matrix={"centrifuge": {"plate_reader": 4}},
+        jobs=(
+            Job(
+                "j1",
+                ops=(
+                    Operation("spin", "centrifuge", 6),
+                    Operation("read", "plate_reader", 3),
+                ),
+            ),
+        ),
+    )
+    bad_matrix_sched = Schedule(
+        "matrix_cell",
+        "manual",
+        ops=(
+            ScheduledOp("j1", 0, "centrifuge", 0, 6, "spin"),
+            ScheduledOp("j1", 1, "plate_reader", 8, 11, "read"),
+        ),
+    )
+    assert check_schedule(inst_matrix, bad_matrix_sched).counts_by_kind() == {"transfer_time": 1}
+
+
+def test_sequence_dependent_setup_times_single_and_multi_unit() -> None:
+    # Issue #30: asymmetric decontamination on cap=1 and cap=2 pools
+    inst_cap1 = Instance(
+        name="cip_cap1",
+        capacities={"washer": 1},
+        setup_times={"washer": {"bsl2": {"elisa": 10}, "elisa": {"bsl2": 2}}},
+        jobs=(
+            Job("j_bsl2", ops=(Operation("wash", "washer", 8, setup_tag="bsl2"),)),
+            Job("j_elisa", ops=(Operation("wash", "washer", 7, setup_tag="elisa"),)),
+        ),
+    )
+    # bsl2 [0, 8) -> elisa [10, 17): gap=2 < required 10 -> setup_time violation
+    bad_cip = Schedule(
+        "cip_cap1",
+        "manual",
+        ops=(
+            ScheduledOp("j_bsl2", 0, "washer", 0, 8, "wash"),
+            ScheduledOp("j_elisa", 0, "washer", 10, 17, "wash"),
+        ),
+    )
+    res_bad = check_schedule(inst_cap1, bad_cip)
+    assert res_bad.feasible is False
+    assert res_bad.counts_by_kind() == {"setup_time": 1}
+
+    # Reverse order: elisa [0, 7) -> bsl2 [9, 17): gap=2 >= required 2 -> feasible!
+    good_cip = Schedule(
+        "cip_cap1",
+        "manual",
+        ops=(
+            ScheduledOp("j_elisa", 0, "washer", 0, 7, "wash"),
+            ScheduledOp("j_bsl2", 0, "washer", 9, 17, "wash"),
+        ),
+    )
+    assert check_schedule(inst_cap1, good_cip).feasible is True
+
+    # Multi-unit (cap=2): two bsl2 ops occupy both units [0, 8), then elisa starts at t=10 (< 8+10)
+    inst_cap2 = Instance(
+        name="cip_cap2",
+        capacities={"washer": 2},
+        setup_times={"washer": {"bsl2": {"elisa": 10}, "elisa": {"bsl2": 2}}},
+        jobs=(
+            Job("b1", ops=(Operation("wash", "washer", 8, setup_tag="bsl2"),)),
+            Job("b2", ops=(Operation("wash", "washer", 8, setup_tag="bsl2"),)),
+            Job("e1", ops=(Operation("wash", "washer", 7, setup_tag="elisa"),)),
+        ),
+    )
+    bad_cap2 = Schedule(
+        "cip_cap2",
+        "manual",
+        ops=(
+            ScheduledOp("b1", 0, "washer", 0, 8, "wash"),
+            ScheduledOp("b2", 0, "washer", 0, 8, "wash"),
+            ScheduledOp("e1", 0, "washer", 12, 19, "wash"),
+        ),
+    )
+    assert check_schedule(inst_cap2, bad_cap2).counts_by_kind() == {"setup_time": 1}
+
+    # Dedicated unit assignment: b1 & b2 share unit 0 ([0,8), [8,16)), e1 uses clean unit 1 ([0,7))
+    good_cap2 = Schedule(
+        "cip_cap2",
+        "manual",
+        ops=(
+            ScheduledOp("b1", 0, "washer", 0, 8, "wash", unit_index=0),
+            ScheduledOp("b2", 0, "washer", 8, 16, "wash", unit_index=0),
+            ScheduledOp("e1", 0, "washer", 0, 7, "wash", unit_index=1),
+        ),
+    )
+    assert check_schedule(inst_cap2, good_cap2).feasible is True
