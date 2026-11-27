@@ -364,11 +364,16 @@ def solve_lns(
 
     # 2. Seed initial job-order permutations
     INF_DL = 10**9
+
+    def _dl_or(jid: str, fallback: int = INF_DL) -> int:
+        dl = pre.job_map[jid].deadline
+        return dl if dl is not None else fallback
+
     seed_orders: list[list[str]] = [
         sorted(
             pre.nonempty_ids,
             key=lambda jid: (
-                pre.job_map[jid].deadline if pre.job_map[jid].deadline is not None else INF_DL,
+                _dl_or(jid),
                 pre.job_map[jid].release,
                 jid,
             ),
@@ -376,8 +381,7 @@ def solve_lns(
         sorted(
             pre.nonempty_ids,
             key=lambda jid: (
-                (pre.job_map[jid].deadline if pre.job_map[jid].deadline is not None else INF_DL)
-                - (pre.job_map[jid].release + pre.chain_lens[jid]),
+                _dl_or(jid) - (pre.job_map[jid].release + pre.chain_lens[jid]),
                 pre.job_map[jid].release,
                 jid,
             ),
@@ -505,12 +509,7 @@ def solve_lns(
                 cur_order = sorted(
                     pre.nonempty_ids,
                     key=lambda jid: (
-                        (
-                            pre.job_map[jid].deadline
-                            if pre.job_map[jid].deadline is not None
-                            else INF_DL // 1000
-                        )
-                        * (0.75 + 0.5 * rng.random())
+                        _dl_or(jid, INF_DL // 1000) * (0.75 + 0.5 * rng.random())
                         + pre.job_map[jid].release * rng.uniform(-0.5, 0.8),
                         jid,
                     ),

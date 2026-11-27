@@ -429,12 +429,12 @@ def parse_opentrons_python_protocol(
     tree = ast.parse(source_code)
     resolved_id = protocol_id
 
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
+    for stmt_node in tree.body:
+        if isinstance(stmt_node, ast.Assign):
+            for target in stmt_node.targets:
                 if isinstance(target, ast.Name) and target.id == "metadata":
                     try:
-                        meta = ast.literal_eval(node.value)
+                        meta = ast.literal_eval(stmt_node.value)
                         if isinstance(meta, dict):
                             pname = meta.get("protocolName") or meta.get("name")
                             if isinstance(pname, str) and pname.strip():
