@@ -1,4 +1,4 @@
-"""Seeded synthetic instance generator for labshift."""
+"""Seeded synthetic and planted-schedule instance generator for labshift."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from labshift.checker import check_schedule
-from labshift.greedy import solve_greedy_repair
-from labshift.models import Instance, Job, Operation
+from labshift.greedy import _PoolTracker, solve_greedy_repair
+from labshift.models import Instance, Job, Operation, Schedule, ScheduledOp
 
 # Generic liquid-handling workflow steps: (op_name, instrument, (min_dur, max_dur))
 _WORKFLOW_TEMPLATES: tuple[tuple[tuple[str, str, tuple[int, int]], ...], ...] = (
@@ -150,6 +150,7 @@ PRESETS: dict[str, PresetConfig] = {
 }
 
 DEFAULT_SUITE_PRESETS: tuple[str, ...] = ("small", "medium", "large")
+PLANTED_SUITE_PRESETS: tuple[str, ...] = ("medium", "large")
 
 
 def _sample_from_config(
@@ -230,6 +231,133 @@ def _sample_from_config(
     )
 
 
+def generate_planted_instance(
+    preset: str = "medium",
+    seed: int = 0,
+    name: str | None = None,
+    *,
+    window_prob: float = 0.70,
+    window_slack_max: int = 2,
+    deadline_slack_max: int = 5,
+) -> tuple[Instance, Schedule]:
+    """Generate a guaranteed-feasible hard instance and its planted witness Schedule.
+
+    Constructs a valid multi-instrument schedule first in a seeded random job priority
+    permutation, then sets ``max_wait = planted_wait + U{0..window_slack_max}`` on
+    ``window_prob`` of inter-step transitions and ``deadline = planted_end + U{0..deadline_slack_max}``
+    on every job. Feasibility is guaranteed by construction without calling any solver.
+    """
+    if preset not in PRESETS:
+        raise ValueError(f"Unknown preset '{preset}'. Choose from {tuple(PRESETS)}.")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(f"'seed' must be an integer, got {seed!r}.")
+
+    cfg = PRESETS[preset]
+    rng = random.Random(seed)
+    inst_name = name or f"planted_{preset}_{seed:02d}"
+    eligible = [
+        tpl
+        for tpl in _WORKFLOW_TEMPLATES
+        if cfg.ops_min <= len(tpl) <= cfg.ops_max
+    ]
+    if not eligible:
+        eligible = list(_WORKFLOW_TEMPLATES)
+
+    raw_jobs: list[tuple[str, int, list[tuple[str, str, int, int]]]] = []
+    for j_idx in range(cfg.num_jobs):
+        tpl = rng.choice(eligible)
+        release = rng.randint(0, cfg.release_max) if j_idx > 0 else 0
+        ops_spec: list[tuple[str, str, int, int]] = []
+        for op_idx, (op_name, inst, (d_min, d_max)) in enumerate(tpl):
+            dur = rng.randint(d_min, d_max)
+            min_w = 0 if op_idx == 0 else rng.choice((0, 0, 1, 2, 3))
+            ops_spec.append((op_name, inst, dur, min_w))
+        raw_jobs.append((f"job_{j_idx + 1:02d}", release, ops_spec))
+
+    # Build a packed multi-instrument witness schedule in a random job permutation.
+    dummy_inst = Instance(name="_planted_tmp", capacities=dict(cfg.capacities), jobs=())
+    trackers: dict[str, _PoolTracker] = {
+        inst: _PoolTracker(dummy_inst, inst) for inst in cfg.capacities
+    }
+    order = list(range(cfg.num_jobs))
+    rng.shuffle(order)
+
+    placed_by_job: dict[str, list[tuple[int, int]]] = {}
+    for j_idx in order:
+        jid, release, ops_spec = raw_jobs[j_idx]
+        cur_ready = release
+        j_placed: list[tuple[int, int]] = []
+        for op_idx, (_, inst, dur, min_w) in enumerate(ops_spec):
+            if op_idx > 0:
+                cur_ready = j_placed[-1][1] + min_w
+            start, _, _ = trackers[inst].earliest_slot(cur_ready, dur, None)
+            end = start + dur
+            trackers[inst].push_interval(start, end)
+            j_placed.append((start, end))
+        placed_by_job[jid] = j_placed
+
+    jobs: list[Job] = []
+    witness_ops: list[ScheduledOp] = []
+    for jid, release, ops_spec in raw_jobs:
+        j_placed = placed_by_job[jid]
+        ops: list[Operation] = []
+        for op_idx, (op_name, inst, dur, min_w) in enumerate(ops_spec):
+            s_val, e_val = j_placed[op_idx]
+            witness_ops.append(
+                ScheduledOp(
+                    job_id=jid,
+                    op_index=op_idx,
+                    name=op_name,
+                    instrument=inst,
+                    start=s_val,
+                    end=e_val,
+                )
+            )
+            if op_idx == 0:
+                max_w: int | None = None
+            else:
+                planted_wait = s_val - j_placed[op_idx - 1][1]
+                if rng.random() < window_prob:
+                    max_w = planted_wait + rng.randint(0, window_slack_max)
+                else:
+                    max_w = None
+            ops.append(
+                Operation(
+                    name=op_name,
+                    instrument=inst,
+                    duration=dur,
+                    min_wait=min_w,
+                    max_wait=max_w,
+                )
+            )
+        deadline = j_placed[-1][1] + rng.randint(0, deadline_slack_max)
+        jobs.append(
+            Job(
+                job_id=jid,
+                ops=tuple(ops),
+                release=release,
+                deadline=deadline,
+            )
+        )
+
+    instance = Instance(
+        name=inst_name,
+        preset=f"planted_{preset}",
+        seed=seed,
+        capacities=dict(cfg.capacities),
+        jobs=tuple(jobs),
+    )
+    witness = Schedule(
+        instance_name=instance.name,
+        solver="planted_witness",
+        ops=tuple(witness_ops),
+        status="OK",
+        solve_time_s=0.0,
+        best_bound=None,
+    )
+    return instance, witness
+
+
 def _is_verified_feasible(instance: Instance) -> bool:
     """Return True if a feasible schedule can be verified via greedy_repair or CP-SAT."""
     rep_sched = solve_greedy_repair(instance)
@@ -249,12 +377,22 @@ def generate_instance(
     name: str | None = None,
     *,
     ensure_feasible: bool = False,
+    planted: bool = False,
+    witness_out: str | Path | None = None,
 ) -> Instance:
     """Generate a synthetic lab scheduling instance for the given preset and seed."""
     if preset not in PRESETS:
         raise ValueError(f"Unknown preset '{preset}'. Choose from {tuple(PRESETS)}.")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise TypeError(f"'seed' must be an integer, got {seed!r}.")
+
+    if planted:
+        inst_planted, witness = generate_planted_instance(
+            preset=preset, seed=seed, name=name
+        )
+        if witness_out is not None:
+            witness.save_json(witness_out)
+        return inst_planted
 
     cfg = PRESETS[preset]
     inst_name = name or f"{preset}_{seed:02d}"
@@ -290,6 +428,8 @@ def generate_benchmark_suite(
     *,
     presets: Sequence[str] = DEFAULT_SUITE_PRESETS,
     ensure_feasible: bool = False,
+    planted: bool = False,
+    witness_dir: str | Path | None = None,
 ) -> list[Path]:
     """Generate a fixed benchmark set of instances in out_dir."""
     if isinstance(count_per_preset, bool) or not isinstance(count_per_preset, int):
@@ -301,17 +441,25 @@ def generate_benchmark_suite(
 
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
+    wit_root = Path(witness_dir) if witness_dir is not None else None
+    if wit_root is not None:
+        wit_root.mkdir(parents=True, exist_ok=True)
+
     written: list[Path] = []
     for p_idx, preset in enumerate(presets):
         for idx in range(count_per_preset):
             seed = base_seed + p_idx * 100 + idx
+            stem = f"planted_{preset}_{idx:02d}" if planted else f"{preset}_{idx:02d}"
+            wit_path = (wit_root / f"{stem}.schedule.json") if (planted and wit_root is not None) else None
             inst = generate_instance(
                 preset=preset,
                 seed=seed,
-                name=f"{preset}_{idx:02d}",
+                name=stem,
                 ensure_feasible=ensure_feasible,
+                planted=planted,
+                witness_out=wit_path,
             )
-            path = root / f"{preset}_{idx:02d}.json"
+            path = root / f"{stem}.json"
             inst.save_json(path)
             written.append(path)
     return written

@@ -1034,6 +1034,175 @@ theorem unsigned_or_late_frontier_rejected (s : DualRegimeSlot)
   · rw [hsig] at hfront; simp at hfront
   · omega
 
+/-! ## 6. Energetic Pool Lower Bound (#36) & Planted Witness Construction (#37) -/
+
+/-- Planted witness inter-step transition: given `predEndMin + minWaitMin ≤ succStartMin`,
+    setting `maxWaitMin := (succStartMin - predEndMin) + windowSlack` guarantees `waitLinkOK`. -/
+def mkPlantedWaitLink (predEndMin succStartMin minWaitMin windowSlack : Nat) : WaitLink :=
+  { predEndMin := predEndMin
+    succStartMin := succStartMin
+    minWaitMin := minWaitMin
+    maxWaitMin := (succStartMin - predEndMin) + windowSlack }
+
+theorem plantedWaitLink_ok (predEndMin succStartMin minWaitMin windowSlack : Nat)
+    (hmin : predEndMin + minWaitMin ≤ succStartMin) :
+    waitLinkOK (mkPlantedWaitLink predEndMin succStartMin minWaitMin windowSlack) = true := by
+  unfold waitLinkOK mkPlantedWaitLink
+  apply decide_eq_true
+  dsimp only
+  omega
+
+/-- Two-step job chain lower bound: `release + dur1 + minWait + dur2 ≤ end2`. -/
+theorem twoStepChain_makespan_lb (o1 o2 : ScheduledOp) (w : WaitLink)
+    (hb1 : opBoundsOK o1 = true) (hw : waitLinkOK w = true)
+    (hlink1 : w.predEndMin = o1.endMin) (hlink2 : w.succStartMin = o2.startMin) :
+    o1.releaseMin + o1.durMin + w.minWaitMin + o2.durMin ≤ o2.endMin := by
+  have h1 := of_decide_eq_true hb1
+  have h2 := of_decide_eq_true hw
+  unfold ScheduledOp.endMin at *
+  omega
+
+/-- Total processing work of `ops` assigned to `poolId`. -/
+def poolWork (poolId : Nat) : List ScheduledOp → Nat
+  | [] => 0
+  | o :: rest => (if o.poolId == poolId then o.durMin else 0) + poolWork poolId rest
+
+/-- Sum of `activeCount poolId t ops` across `[start, start + len)`. -/
+def sumActiveRange (poolId start : Nat) (ops : List ScheduledOp) : Nat → Nat
+  | 0 => 0
+  | k + 1 => activeCount poolId (start + k) ops + sumActiveRange poolId start ops k
+
+/-- Number of minutes in `[start, start + len)` during which single operation `o` is active on `poolId`. -/
+def countOpInRange (poolId start : Nat) (o : ScheduledOp) : Nat → Nat
+  | 0 => 0
+  | k + 1 => (if opActiveAt poolId (start + k) o then 1 else 0) + countOpInRange poolId start o k
+
+/-- Sum of `countOpInRange` across a list of scheduled operations. -/
+def sumCountOps (poolId start len : Nat) : List ScheduledOp → Nat
+  | [] => 0
+  | o :: rest => countOpInRange poolId start o len + sumCountOps poolId start len rest
+
+private theorem countOpInRange_ge_clipped (poolId start : Nat) (o : ScheduledOp)
+    (hp : o.poolId = poolId) (hs : start ≤ o.startMin) (len : Nat) :
+    (if o.endMin ≤ start + len then o.endMin else start + len) - o.startMin ≤
+      countOpInRange poolId start o len := by
+  induction len with
+  | zero =>
+    simp only [countOpInRange]
+    split <;> omega
+  | succ k ih =>
+    simp only [countOpInRange]
+    by_cases hact : o.startMin ≤ start + k ∧ start + k < o.endMin
+    · have htrue : opActiveAt poolId (start + k) o = true := by
+        unfold opActiveAt
+        exact decide_eq_true ⟨hp, hact.1, hact.2⟩
+      simp only [htrue, ↓reduceIte]
+      split at ih <;> split <;> omega
+    · have hfalse : opActiveAt poolId (start + k) o = false := by
+        unfold opActiveAt
+        apply decide_eq_false
+        intro ⟨_, h1, h2⟩
+        exact hact ⟨h1, h2⟩
+      simp only [hfalse, Bool.false_eq_true, ↓reduceIte]
+      split at ih <;> split <;> omega
+
+private theorem dur_le_countOpInRange (poolId start len : Nat) (o : ScheduledOp)
+    (hp : o.poolId = poolId) (hs : start ≤ o.startMin) (he : o.endMin ≤ start + len) :
+    o.durMin ≤ countOpInRange poolId start o len := by
+  have hclip := countOpInRange_ge_clipped poolId start o hp hs len
+  simp only [he, ↓reduceIte] at hclip
+  unfold ScheduledOp.endMin at hclip
+  omega
+
+private theorem sumCountOps_succ (poolId start k : Nat) (ops : List ScheduledOp) :
+    sumCountOps poolId start (k + 1) ops =
+      activeCount poolId (start + k) ops + sumCountOps poolId start k ops := by
+  unfold activeCount
+  induction ops with
+  | nil => rfl
+  | cons o rest ih =>
+    simp only [sumCountOps, countOpInRange, List.filter]
+    cases h : opActiveAt poolId (start + k) o
+    · simp only [Bool.false_eq_true, ↓reduceIte]
+      omega
+    · simp only [↓reduceIte, List.length_cons]
+      omega
+
+private theorem sumCountOps_eq_sumActiveRange (poolId start len : Nat) (ops : List ScheduledOp) :
+    sumCountOps poolId start len ops = sumActiveRange poolId start ops len := by
+  induction len with
+  | zero =>
+    simp only [sumActiveRange]
+    induction ops with
+    | nil => rfl
+    | cons o rest ih => simp [sumCountOps, countOpInRange, ih]
+  | succ k ih =>
+    rw [sumCountOps_succ, sumActiveRange, ih]
+
+private theorem poolWork_le_sumCountOps (poolId start len : Nat) (ops : List ScheduledOp)
+    (hwin : ∀ o ∈ ops, o.poolId = poolId → start ≤ o.startMin ∧ o.endMin ≤ start + len) :
+    poolWork poolId ops ≤ sumCountOps poolId start len ops := by
+  induction ops with
+  | nil => simp [poolWork, sumCountOps]
+  | cons o rest ih =>
+    have hrest : ∀ x ∈ rest, x.poolId = poolId → start ≤ x.startMin ∧ x.endMin ≤ start + len :=
+      fun x hx => hwin x (List.Mem.tail _ hx)
+    have ih_val := ih hrest
+    simp only [poolWork, sumCountOps]
+    cases hp : (o.poolId == poolId) with
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      omega
+    | true =>
+      have hpeq : o.poolId = poolId := beq_iff_eq.mp hp
+      rcases hwin o (List.Mem.head _) hpeq with ⟨hs, he⟩
+      have hdur := dur_le_countOpInRange poolId start len o hpeq hs he
+      simp only [↓reduceIte]
+      omega
+
+private theorem sumActiveRange_le_cap_mul (poolId start cap len : Nat)
+    (ops : List ScheduledOp) (links : List WaitLink)
+    (hok : ScheduleOK ops links)
+    (hcap : ∀ o ∈ ops, o.poolId = poolId → o.poolCap ≤ cap) :
+    sumActiveRange poolId start ops len ≤ cap * len := by
+  induction len with
+  | zero => simp [sumActiveRange]
+  | succ k ih =>
+    simp only [sumActiveRange]
+    have hact := scheduleOK_implies_activeCount_le_poolCap ops links poolId cap hok hcap (start + k)
+    have hmul : cap * (k + 1) = cap * k + cap := Nat.mul_succ cap k
+    omega
+
+private theorem ceilDiv_le_of_le_mul (work cap span : Nat) (hcap : 0 < cap)
+    (hle : work ≤ cap * span) :
+    (work + cap - 1) / cap ≤ span := by
+  rw [Nat.div_le_iff_le_mul_add_pred hcap]
+  omega
+
+/-- Jackson/Carlier Energetic Pool Lower Bound Soundness (#36):
+    For any valid `ScheduleOK` schedule on `poolId` (capacity `cap > 0`) where every pool
+    operation starts at `≥ rMin` and finishes with tail `≤ makespan - qMin` (`rMin + qMin ≤ makespan`),
+    `rMin + ceil(poolWork / cap) + qMin ≤ makespan`. -/
+theorem energeticPoolBound_le_makespan (ops : List ScheduledOp) (links : List WaitLink)
+    (poolId cap rMin qMin makespan : Nat)
+    (hcap_pos : 0 < cap)
+    (hok : ScheduleOK ops links)
+    (hcap : ∀ o ∈ ops, o.poolId = poolId → o.poolCap ≤ cap)
+    (hrq : rMin + qMin ≤ makespan)
+    (hheads_tails : ∀ o ∈ ops, o.poolId = poolId → rMin ≤ o.startMin ∧ o.endMin + qMin ≤ makespan) :
+    rMin + (poolWork poolId ops + cap - 1) / cap + qMin ≤ makespan := by
+  let span := makespan - rMin - qMin
+  have hwin : ∀ o ∈ ops, o.poolId = poolId → rMin ≤ o.startMin ∧ o.endMin ≤ rMin + span := by
+    intro o ho hp
+    rcases hheads_tails o ho hp with ⟨hs, he⟩
+    exact ⟨hs, by omega⟩
+  have hw1 := poolWork_le_sumCountOps poolId rMin span ops hwin
+  rw [sumCountOps_eq_sumActiveRange] at hw1
+  have hw2 := sumActiveRange_le_cap_mul poolId rMin cap span ops links hok hcap
+  have hwork_le : poolWork poolId ops ≤ cap * span := Nat.le_trans hw1 hw2
+  have hceil := ceilDiv_le_of_le_mul (poolWork poolId ops) cap span hcap_pos hwork_le
+  omega
+
 /-! ## Compile-Time `#guard` Verification Witnesses -/
 
 private def sampleOp1 : ScheduledOp :=
@@ -1099,5 +1268,18 @@ private def sampleOp2 : ScheduledOp :=
 #guard (checkDualRegimeSlot
          { startMinInDay := 420, durMin := 90, isFrontierException := true,
            humanCosigned := true, leanCertified := false }).isSome == true
+
+-- Planted witness link (#37) and energetic pool lower bound (#36) compile-time guards
+#guard waitLinkOK (mkPlantedWaitLink 15 22 3 2) == true
+
+#guard (let ops :=
+          [ { opId := 1, poolId := 2, machineIdx := 0, poolCap := 2,
+              startMin := 10, durMin := 15, releaseMin := 10, deadlineMin := 60 },
+            { opId := 2, poolId := 2, machineIdx := 1, poolCap := 2,
+              startMin := 12, durMin := 15, releaseMin := 10, deadlineMin := 60 },
+            { opId := 3, poolId := 2, machineIdx := 0, poolCap := 2,
+              startMin := 25, durMin := 15, releaseMin := 10, deadlineMin := 60 } ]
+        let lb := 10 + (poolWork 2 ops + 2 - 1) / 2 + 5
+        lb == 38 && lb ≤ 45) == true
 
 end LabShiftLean

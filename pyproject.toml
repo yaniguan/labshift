@@ -10,12 +10,17 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Yani Guan" }]
 requires-python = ">=3.11"
-dependencies = [
-    "ortools>=9.8",
-]
+dependencies = []
 
 [project.optional-dependencies]
+cpsat = [
+    "ortools>=9.8",
+]
+pyjobshop = [
+    "pyjobshop>=0.0.9",
+]
 dev = [
+    "ortools>=9.8",
     "pytest>=7.0",
     "ruff>=0.4",
     "mypy>=1.8",
@@ -47,5 +52,5 @@ python_version = "3.11"
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["ortools.*"]
+module = ["ortools.*", "pyjobshop.*"]
 ignore_missing_imports = true

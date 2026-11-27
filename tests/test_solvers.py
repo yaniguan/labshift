@@ -43,7 +43,8 @@ def test_compute_metrics_hand_calculated() -> None:
     # j1 finishes at 21 (release 5 => flow 16; deadline 20 => tardiness 1)
     # j2 finishes at 8 (release 2 => flow 6; deadline 30 => tardiness 0)
     # makespan = 21, mean_flow_time = (16 + 6) / 2 = 11.0
-    # best_bound = 14.0 => gap_pct = 100 * (21 - 14) / 21 = 33.333333...%
+    # stdlib lower_bound = 20 (j1 chain: 5 + 6 + 1 + 8 = 20); solver_bound = 14.0
+    # best_bound = max(14.0, 20) = 20.0 => gap_pct = 100 * (21 - 20) / 21
     sched = Schedule(
         instance_name="hand_calc",
         solver="manual",
@@ -64,8 +65,10 @@ def test_compute_metrics_hand_calculated() -> None:
     assert m.window_violations == 0
     assert m.total_violations == 1
     assert m.mean_flow_time == pytest.approx(11.0)
-    assert m.best_bound == 14.0
-    assert m.gap_pct == pytest.approx(100.0 * 7.0 / 21.0)
+    assert m.lower_bound == 20
+    assert m.solver_bound == 14.0
+    assert m.best_bound == 20.0
+    assert m.gap_pct == pytest.approx(100.0 * 1.0 / 21.0)
 
     # Verify invalid best_bound > makespan is NOT masked by a max(0.0, ...) clamp
     bad_bound_sched = Schedule(
@@ -103,23 +106,35 @@ def test_format_benchmark_table_excludes_infeasible_and_unknown_from_averages() 
     infeas_sched = Schedule(inst.name, "cpsat", ops=(), status="INFEASIBLE")
     infeas_metrics = compute_metrics(inst, infeas_sched)
 
-    unknown_sched = Schedule(inst.name, "cpsat", ops=(), status="UNKNOWN", best_bound=50.0)
+    unknown_sched = Schedule(inst.name, "cpsat", ops=(), status="UNKNOWN", best_bound=150.0)
     unknown_metrics = compute_metrics(inst, unknown_sched)
+
+    # Also include an ops-bearing schedule that violates constraints (feasible=False)
+    bad_ops = tuple(
+        ScheduledOp(op.job_id, op.op_index, op.instrument, op.start + 500, op.end + 500, op.name)
+        for op in ok_sched.ops
+    )
+    viol_sched = Schedule(inst.name, "greedy", ops=bad_ops, status="OK")
+    viol_metrics = compute_metrics(inst, viol_sched)
+    assert viol_metrics.feasible is False
+    assert viol_metrics.makespan is not None
 
     rows = [
         BenchRow("inst_ok", "small", "cpsat", "OPTIMAL", ok_metrics),
+        BenchRow("inst_viol", "small", "cpsat", "OK", viol_metrics),
         BenchRow("inst_infeas", "small", "cpsat", "INFEASIBLE", infeas_metrics),
         BenchRow("inst_unknown", "large", "cpsat", "UNKNOWN", unknown_metrics),
     ]
     table = format_benchmark_table(rows)
     lines = table.splitlines()
     assert "inst_infeas" in table
-    assert "50.0" in table  # preserved UNKNOWN best_bound
+    assert "150.0" in table  # preserved UNKNOWN best_bound
     summary_cells = [cell.strip() for cell in lines[-1].split("|")]
-    assert summary_cells[0] == "ALL (3)"
-    assert summary_cells[2] == "1/3"  # solved count
-    assert summary_cells[3] == "1/3"  # feasible count
-    assert summary_cells[4] == f"{ok_metrics.makespan:.1f}"
+    assert summary_cells[0] == "ALL (4)"
+    assert summary_cells[1] == "feas-only (1/4)"
+    assert summary_cells[2] == "2/4"  # solved count (inst_ok + inst_viol)
+    assert summary_cells[3] == "1/4"  # feasible count (inst_ok only)
+    assert summary_cells[4] == f"{ok_metrics.makespan:.1f}"  # excludes inst_viol's +500 makespan!
     assert summary_cells[6] == f"{ok_metrics.mean_flow_time:.1f}"
 
 
@@ -339,7 +354,8 @@ def test_cpsat_preserves_best_bound_on_unknown(monkeypatch: pytest.MonkeyPatch) 
     assert sched.best_bound == 42.0
     metrics = compute_metrics(inst, sched)
     assert metrics.makespan is None
-    assert metrics.best_bound == 42.0
+    assert metrics.solver_bound == 42.0
+    assert metrics.best_bound == max(42.0, float(metrics.lower_bound))
     assert metrics.gap_pct is None
 
 
